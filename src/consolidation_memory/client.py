@@ -118,7 +118,15 @@ class MemoryClient:
         from consolidation_memory.config import DEDUP_SIMILARITY_THRESHOLD, DEDUP_ENABLED
 
         self._vector_store.reload_if_stale()
-        embedding = encode_documents([content])
+
+        try:
+            embedding = encode_documents([content])
+        except ConnectionError as e:
+            logger.error("Embedding backend unreachable during store: %s", e)
+            return StoreResult(
+                status="backend_unavailable",
+                message=f"Embedding backend unreachable: {e}",
+            )
 
         # Dedup check
         if DEDUP_ENABLED and self._vector_store.size > 0:
@@ -142,8 +150,8 @@ class MemoryClient:
         # Validate content_type
         valid_types = {"exchange", "fact", "solution", "preference"}
         if content_type not in valid_types:
-            content_type = "exchange"
             logger.warning("Invalid content_type %r, defaulting to 'exchange'", content_type)
+            content_type = "exchange"
 
         episode_id = insert_episode(
             content=content,
@@ -192,12 +200,18 @@ class MemoryClient:
 
         self._vector_store.reload_if_stale()
 
-        result = recall(
-            query=query,
-            n_results=n_results,
-            include_knowledge=include_knowledge,
-            vector_store=self._vector_store,
-        )
+        try:
+            result = recall(
+                query=query,
+                n_results=n_results,
+                include_knowledge=include_knowledge,
+                vector_store=self._vector_store,
+            )
+        except ConnectionError as e:
+            logger.error("Embedding backend unreachable during recall: %s", e)
+            return RecallResult(
+                message=f"Embedding backend unreachable: {e}",
+            )
 
         stats = get_stats()
 
@@ -217,10 +231,13 @@ class MemoryClient:
         """Get memory system statistics.
 
         Returns:
-            StatusResult with counts, backend info, and last consolidation.
+            StatusResult with counts, backend info, health, and last consolidation.
         """
         from consolidation_memory.database import get_stats, get_last_consolidation_run
-        from consolidation_memory.config import EMBEDDING_MODEL_NAME, EMBEDDING_BACKEND, DB_PATH
+        from consolidation_memory.config import (
+            EMBEDDING_MODEL_NAME, EMBEDDING_BACKEND, DB_PATH,
+            CONSOLIDATION_INTERVAL_HOURS, FAISS_COMPACTION_THRESHOLD,
+        )
 
         stats = get_stats()
         last_run = get_last_consolidation_run()
@@ -228,6 +245,8 @@ class MemoryClient:
         db_size_mb = 0.0
         if DB_PATH.exists():
             db_size_mb = round(DB_PATH.stat().st_size / (1024 * 1024), 2)
+
+        health = self._compute_health(last_run, CONSOLIDATION_INTERVAL_HOURS, FAISS_COMPACTION_THRESHOLD)
 
         return StatusResult(
             episodic_buffer=stats["episodic_buffer"],
@@ -239,6 +258,7 @@ class MemoryClient:
             faiss_tombstones=self._vector_store.tombstone_count,
             db_size_mb=db_size_mb,
             version=__version__,
+            health=health,
         )
 
     def forget(self, episode_id: str) -> ForgetResult:
@@ -407,6 +427,78 @@ class MemoryClient:
             self._consolidation_lock.release()
 
     # ── Internal ──────────────────────────────────────────────────────────
+
+    def _compute_health(
+        self,
+        last_run: dict | None,
+        interval_hours: float,
+        compaction_threshold: float,
+    ) -> dict:
+        """Build health assessment dict."""
+        issues: list[str] = []
+
+        backend_reachable = self._probe_backend()
+        if not backend_reachable:
+            issues.append("Embedding backend unreachable")
+
+        tombstone_ratio = self._vector_store.tombstone_ratio
+        if tombstone_ratio > compaction_threshold * 0.75:  # warn at 75% of threshold
+            issues.append(
+                f"FAISS tombstone ratio {tombstone_ratio:.1%} approaching "
+                f"compaction threshold {compaction_threshold:.0%}"
+            )
+
+        if last_run:
+            if last_run.get("status") == "failed":
+                issues.append(
+                    f"Last consolidation failed: {last_run.get('error_message', 'unknown')}"
+                )
+            completed_at = last_run.get("completed_at") or last_run.get("started_at")
+            if completed_at:
+                from datetime import datetime, timezone
+                try:
+                    last_time = datetime.fromisoformat(completed_at)
+                    age_hours = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600
+                    if age_hours > interval_hours * 2:
+                        issues.append(
+                            f"Last consolidation was {age_hours:.0f}h ago "
+                            f"(expected every {interval_hours:.0f}h)"
+                        )
+                except (ValueError, TypeError):
+                    pass
+
+        if issues:
+            has_critical = not backend_reachable
+            status = "error" if has_critical else "degraded"
+        else:
+            status = "healthy"
+
+        return {
+            "status": status,
+            "issues": issues,
+            "backend_reachable": backend_reachable,
+        }
+
+    def _probe_backend(self) -> bool:
+        """Quick check if embedding backend is reachable. Returns True/False."""
+        from consolidation_memory.config import EMBEDDING_BACKEND, EMBEDDING_API_BASE
+
+        if EMBEDDING_BACKEND == "fastembed":
+            return True
+
+        from urllib.request import urlopen, Request
+        from urllib.error import URLError
+
+        try:
+            req = Request(
+                f"{EMBEDDING_API_BASE}/models",
+                headers={"Content-Type": "application/json"},
+            )
+            with urlopen(req, timeout=3) as resp:
+                resp.read()
+            return True
+        except (URLError, ConnectionError, TimeoutError, OSError):
+            return False
 
     def _check_embedding_backend(self) -> None:
         """Verify the embedding backend is reachable."""

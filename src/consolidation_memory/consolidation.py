@@ -466,6 +466,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
 
         topics_created = 0
         topics_updated = 0
+        clusters_failed = 0
         api_calls = 0
 
         for cluster_id, cluster_items in valid_clusters.items():
@@ -539,6 +540,7 @@ confidence: {confidence}
                 api_calls += calls
             except Exception as e:
                 logger.error("LLM API call failed for cluster %d: %s", cluster_id, e)
+                clusters_failed += 1
                 continue
 
             parsed = _parse_frontmatter(response_text)
@@ -597,6 +599,7 @@ Output the complete merged document starting with --- frontmatter:"""
                     logger.info("Merged into existing topic: %s", existing["filename"])
                 except Exception as e:
                     logger.error("Merge failed for topic %s: %s", existing["filename"], e)
+                    clusters_failed += 1
                     continue
             else:
                 filename = _slugify(title) + ".md"
@@ -631,6 +634,10 @@ Output the complete merged document starting with --- frontmatter:"""
         else:
             logger.debug("Pruning disabled (set prune_enabled = true in config to enable)")
 
+        logger.info(
+            "FAISS tombstone ratio: %.1f%% (compaction threshold: %.1f%%)",
+            vs.tombstone_ratio * 100, FAISS_COMPACTION_THRESHOLD * 100,
+        )
         if vs.tombstone_ratio >= FAISS_COMPACTION_THRESHOLD:
             compacted = vs.compact()
             logger.info("Compacted %d tombstoned vectors from FAISS index", compacted)
@@ -644,6 +651,7 @@ Output the complete merged document starting with --- frontmatter:"""
             "episodes_with_vectors": len(valid_episodes),
             "clusters_total": len(clusters),
             "clusters_valid": len(valid_clusters),
+            "clusters_failed": clusters_failed,
             "topics_created": topics_created,
             "topics_updated": topics_updated,
             "episodes_pruned": len(prunable) if prunable else 0,
@@ -665,9 +673,9 @@ Output the complete merged document starting with --- frontmatter:"""
 
         logger.info(
             "Consolidation complete: %d episodes -> %d clusters -> %d new topics, "
-            "%d updated, %d pruned, %d surprise-adjusted",
+            "%d updated, %d failed, %d pruned, %d surprise-adjusted",
             len(valid_episodes), len(valid_clusters), topics_created, topics_updated,
-            len(prunable) if prunable else 0, surprise_adjusted,
+            clusters_failed, len(prunable) if prunable else 0, surprise_adjusted,
         )
         return report
 

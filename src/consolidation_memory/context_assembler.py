@@ -73,6 +73,11 @@ def recall(
     query_vec = encode_query(query)
     candidates = vector_store.search(query_vec, k=n_results * 3)
 
+    logger.debug(
+        "recall: query_len=%d, n_results=%d, vector_candidates=%d",
+        len(query), n_results, len(candidates),
+    )
+
     # Batch-fetch all candidate episodes in one query instead of N individual SELECTs
     candidate_ids = [eid for eid, _ in candidates]
     episodes_by_id = get_episodes_batch(candidate_ids)
@@ -84,6 +89,11 @@ def recall(
             continue
         score = _priority_score(similarity, ep)
         scored.append((ep, score, similarity))
+
+    logger.debug(
+        "recall: db_matches=%d, scored_after_priority=%d",
+        len(episodes_by_id), len(scored),
+    )
 
     scored.sort(key=lambda x: x[1], reverse=True)
     top = scored[:n_results]
@@ -162,6 +172,11 @@ def _search_knowledge(query: str, query_vec: np.ndarray | None = None) -> list[d
             "confidence": topic["confidence"],
             "relevance": round(relevance, 3),
         })
+
+    logger.debug(
+        "knowledge_search: %d topics checked, %d passed relevance threshold (>=0.15)",
+        len(topics), len(scored_topics),
+    )
 
     if scored_topics:
         increment_topic_access([t["filename"] for t in scored_topics])

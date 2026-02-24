@@ -156,3 +156,62 @@ MAX_BACKUPS = 5
 _recall = _cfg.get("recall", {})
 RECALL_DEFAULT_N = int(_recall.get("default_n", 10))
 RECALL_MAX_N = int(_recall.get("max_n", 50))
+
+
+# ── Validation ───────────────────────────────────────────────────────────────
+
+_KNOWN_EMBEDDING_BACKENDS = {"fastembed", "lmstudio", "openai", "ollama"}
+_KNOWN_LLM_BACKENDS = {"lmstudio", "openai", "ollama", "disabled"}
+
+
+def _validate_config() -> None:
+    """Validate config values at load time. Raises ValueError on bad config."""
+    errors = []
+
+    if EMBEDDING_BACKEND not in _KNOWN_EMBEDDING_BACKENDS:
+        errors.append(
+            f"embedding.backend = {EMBEDDING_BACKEND!r}, "
+            f"expected one of {_KNOWN_EMBEDDING_BACKENDS}"
+        )
+    if EMBEDDING_DIMENSION <= 0:
+        errors.append(f"embedding.dimension = {EMBEDDING_DIMENSION}, must be > 0")
+    if not EMBEDDING_MODEL_NAME:
+        errors.append("embedding.model is empty")
+
+    if LLM_BACKEND not in _KNOWN_LLM_BACKENDS:
+        errors.append(
+            f"llm.backend = {LLM_BACKEND!r}, "
+            f"expected one of {_KNOWN_LLM_BACKENDS}"
+        )
+    if LLM_TEMPERATURE < 0:
+        errors.append(f"llm.temperature = {LLM_TEMPERATURE}, must be >= 0")
+
+    if not (0.0 < CONSOLIDATION_CLUSTER_THRESHOLD <= 1.0):
+        errors.append(
+            f"consolidation.cluster_threshold = {CONSOLIDATION_CLUSTER_THRESHOLD}, "
+            f"must be in (0, 1]"
+        )
+    if not (0.0 < DEDUP_SIMILARITY_THRESHOLD <= 1.0):
+        errors.append(
+            f"dedup.similarity_threshold = {DEDUP_SIMILARITY_THRESHOLD}, "
+            f"must be in (0, 1]"
+        )
+
+    if errors:
+        raise ValueError(
+            "Invalid consolidation_memory config:\n  " + "\n  ".join(errors)
+        )
+
+
+_validate_config()
+
+import logging as _logging
+
+_config_logger = _logging.getLogger(__name__)
+_config_path = _find_config_path()
+_config_logger.info(
+    "Config loaded: path=%s, embedding=%s/%s (dim=%d), llm=%s/%s",
+    _config_path or "(defaults)",
+    EMBEDDING_BACKEND, EMBEDDING_MODEL_NAME, EMBEDDING_DIMENSION,
+    LLM_BACKEND, LLM_MODEL,
+)

@@ -194,11 +194,17 @@ class VectorStore:
     def search(self, query_embedding: np.ndarray, k: int = 10) -> list[tuple[str, float]]:
         with self._lock:
             if self._index.ntotal == 0:
+                logger.debug("search: index empty, returning []")
                 return []
             effective_size = self._index.ntotal - len(self._tombstones)
             if effective_size <= 0:
+                logger.debug("search: all %d vectors tombstoned, returning []", self._index.ntotal)
                 return []
             fetch_k = min(k + len(self._tombstones), self._index.ntotal)
+            logger.debug(
+                "search: ntotal=%d, tombstones=%d, effective=%d, k=%d, fetch_k=%d",
+                self._index.ntotal, len(self._tombstones), effective_size, k, fetch_k,
+            )
             vec = query_embedding.reshape(1, -1).astype(np.float32)
             scores, indices = self._index.search(vec, fetch_k)
             results = []
@@ -211,6 +217,13 @@ class VectorStore:
                 results.append((uid, float(score)))
                 if len(results) >= k:
                     break
+            if results:
+                logger.debug(
+                    "search: returning %d results, top similarity=%.4f",
+                    len(results), results[0][1],
+                )
+            else:
+                logger.debug("search: no results survived tombstone filtering")
             return results
 
     # ── Remove (tombstone-based, O(1)) ───────────────────────────────────────

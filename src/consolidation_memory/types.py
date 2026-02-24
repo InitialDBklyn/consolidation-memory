@@ -26,6 +26,7 @@ class RecallResult:
     knowledge: list[dict] = field(default_factory=list)
     total_episodes: int = 0
     total_knowledge_topics: int = 0
+    message: str | None = None
 
 
 @dataclass
@@ -49,6 +50,7 @@ class StatusResult:
     faiss_tombstones: int = 0
     db_size_mb: float = 0.0
     version: str = ""
+    health: dict = field(default_factory=dict)
 
 
 @dataclass
