@@ -256,6 +256,53 @@ def cmd_export():
     print(f"Exported {len(episodes)} episodes + {len(knowledge)} topics to {export_path}")
 
 
+def _validate_import(data: dict) -> list[str]:
+    """Validate import JSON structure. Returns list of error strings (empty = valid)."""
+    errors = []
+
+    if not isinstance(data, dict):
+        return ["Top-level value must be a JSON object"]
+
+    for key in ("episodes", "knowledge_topics", "stats", "version"):
+        if key not in data:
+            errors.append(f"Missing required key: {key!r}")
+
+    if errors:
+        return errors  # Can't validate deeper if structure is wrong
+
+    if not isinstance(data["episodes"], list):
+        errors.append("'episodes' must be a list")
+    else:
+        for i, ep in enumerate(data["episodes"]):
+            if not isinstance(ep, dict):
+                errors.append(f"episodes[{i}]: must be an object")
+                continue
+            for field in ("id", "content", "content_type"):
+                if field not in ep:
+                    errors.append(f"episodes[{i}]: missing required field {field!r}")
+
+    if not isinstance(data["knowledge_topics"], list):
+        errors.append("'knowledge_topics' must be a list")
+    else:
+        for i, topic in enumerate(data["knowledge_topics"]):
+            if not isinstance(topic, dict):
+                errors.append(f"knowledge_topics[{i}]: must be an object")
+                continue
+            for field in ("filename", "title", "summary"):
+                if field not in topic:
+                    errors.append(f"knowledge_topics[{i}]: missing required field {field!r}")
+
+    if not isinstance(data.get("stats"), dict):
+        errors.append("'stats' must be an object")
+
+    # Cap error output to avoid flooding on completely wrong files
+    if len(errors) > 20:
+        errors = errors[:20]
+        errors.append("... and more errors (showing first 20)")
+
+    return errors
+
+
 def cmd_import(path: str):
     """Import from JSON export."""
     import logging
@@ -276,7 +323,20 @@ def cmd_import(path: str):
         print(f"File not found: {export_path}")
         sys.exit(1)
 
-    data = json.loads(export_path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(export_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(f"Invalid JSON: {e}")
+        sys.exit(1)
+
+    # Validate top-level structure
+    errors = _validate_import(data)
+    if errors:
+        print("Import validation failed:")
+        for err in errors:
+            print(f"  - {err}")
+        sys.exit(1)
+
     print(f"Import file: {export_path}")
     print(f"  Episodes: {data['stats']['episode_count']}")
     print(f"  Knowledge: {data['stats']['knowledge_count']}")

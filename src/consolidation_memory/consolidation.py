@@ -97,14 +97,17 @@ _LLM_SYSTEM_PROMPT = (
 from consolidation_memory import topic_cache  # noqa: E402
 
 
+_SANITIZE_RE = re.compile(
+    r'(?i)(system\s*:?\s*prompt|you\s+are\b|you\s+must\b|ignore\s+(previous|above)'
+    r'|forget\s+(your|all)|override|disregard'
+    r'|important\s*:|new\s+instructions|assistant\s*:'
+    r'|\[system\]|<\/?system>)',
+)
+
+
 def _sanitize_for_prompt(text: str) -> str:
     """Strip common prompt injection patterns from episode content."""
-    return re.sub(
-        r'(?i)(system\s*:?\s*prompt|you\s+are\b|you\s+must\b|ignore\s+(previous|above)'
-        r'|forget\s+(your|all)|override|disregard)',
-        '[REDACTED]',
-        text,
-    )
+    return _SANITIZE_RE.sub('[REDACTED]', text)
 
 
 # ── Utilities ────────────────────────────────────────────────────────────────
@@ -521,6 +524,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
         topics_created = 0
         topics_updated = 0
         clusters_failed = 0
+        consecutive_failures = 0
         api_calls = 0
         _run_start = time.monotonic()
         cluster_confidences = []
@@ -532,6 +536,13 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
                 logger.warning(
                     "Consolidation max duration (%.0fs) exceeded after %.0fs, stopping early",
                     CONSOLIDATION_MAX_DURATION, elapsed,
+                )
+                break
+
+            if consecutive_failures >= 3:
+                logger.warning(
+                    "3 consecutive cluster failures — aborting consolidation "
+                    "(backend likely unavailable)"
                 )
                 break
 
@@ -607,6 +618,7 @@ confidence: {confidence}
             except Exception as e:
                 logger.error("LLM API call failed for cluster %d: %s", cluster_id, e)
                 clusters_failed += 1
+                consecutive_failures += 1
                 failed_ep_ids = [ep["id"] for ep in cluster_episodes]
                 increment_consolidation_attempts(failed_ep_ids)
                 all_failed_ep_ids.extend(failed_ep_ids)
@@ -665,10 +677,12 @@ Output the complete merged document starting with --- frontmatter:"""
                     mark_consolidated(cluster_ep_ids, existing["filename"])
                     topic_cache.invalidate()
                     topics_updated += 1
+                    consecutive_failures = 0
                     logger.info("Merged into existing topic: %s", existing["filename"])
                 except Exception as e:
                     logger.error("Merge failed for topic %s: %s", existing["filename"], e)
                     clusters_failed += 1
+                    consecutive_failures += 1
                     failed_ep_ids = [ep["id"] for ep in cluster_episodes]
                     increment_consolidation_attempts(failed_ep_ids)
                     all_failed_ep_ids.extend(failed_ep_ids)
@@ -689,6 +703,7 @@ Output the complete merged document starting with --- frontmatter:"""
                 mark_consolidated(cluster_ep_ids, filename)
                 topic_cache.invalidate()
                 topics_created += 1
+                consecutive_failures = 0
                 logger.info("Created new topic: %s", filename)
 
         _update_index()

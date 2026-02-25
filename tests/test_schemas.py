@@ -15,6 +15,7 @@ class TestSchemaStructure:
         names = {t["function"]["name"] for t in openai_tools}
         assert names == {
             "memory_store",
+            "memory_store_batch",
             "memory_recall",
             "memory_status",
             "memory_forget",
@@ -73,7 +74,10 @@ class TestDispatch:
 
         result = dispatch_tool_call(client, "memory_recall", {"query": "test"})
         assert result["total_episodes"] == 1
-        client.recall.assert_called_once_with(query="test", n_results=10, include_knowledge=True)
+        client.recall.assert_called_once_with(
+            query="test", n_results=10, include_knowledge=True,
+            content_types=None, tags=None, after=None, before=None,
+        )
 
     def test_dispatch_status(self):
         client = MagicMock()

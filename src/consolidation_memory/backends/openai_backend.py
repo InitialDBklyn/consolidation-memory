@@ -8,6 +8,8 @@ import logging
 
 import numpy as np
 
+from consolidation_memory.backends import retry_with_backoff
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,10 +34,25 @@ class OpenAIEmbeddingBackend:
         norms[norms == 0] = 1.0
         return vecs / norms
 
+    def _get_transient_exceptions(self) -> tuple:
+        """Return OpenAI SDK transient exception types (import-time safe)."""
+        try:
+            from openai import APIError, APITimeoutError, APIConnectionError
+            return (APIError, APITimeoutError, APIConnectionError, ConnectionError, TimeoutError)
+        except ImportError:
+            return (ConnectionError, TimeoutError, OSError)
+
     def encode_documents(self, texts: list[str]) -> np.ndarray:
-        response = self._client.embeddings.create(input=texts, model=self._model_name)
-        data = sorted(response.data, key=lambda x: x.index)
-        vecs = np.array([d.embedding for d in data], dtype=np.float32)
+        transient = self._get_transient_exceptions()
+
+        def _do():
+            response = self._client.embeddings.create(input=texts, model=self._model_name)
+            data = sorted(response.data, key=lambda x: x.index)
+            return np.array([d.embedding for d in data], dtype=np.float32)
+
+        vecs = retry_with_backoff(
+            _do, transient_exceptions=transient, context="OpenAI embedding",
+        )
         return self._normalize(vecs)
 
     def encode_query(self, text: str) -> np.ndarray:
@@ -70,14 +87,28 @@ class OpenAILLMBackend:
         self._max_tokens = max_tokens
         self._temperature = temperature
 
+    def _get_transient_exceptions(self) -> tuple:
+        try:
+            from openai import APIError, APITimeoutError, APIConnectionError
+            return (APIError, APITimeoutError, APIConnectionError, ConnectionError, TimeoutError)
+        except ImportError:
+            return (ConnectionError, TimeoutError, OSError)
+
     def generate(self, system_prompt: str, user_prompt: str) -> str:
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=self._max_tokens,
-            temperature=self._temperature,
+        transient = self._get_transient_exceptions()
+
+        def _do():
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=self._max_tokens,
+                temperature=self._temperature,
+            )
+            return response.choices[0].message.content
+
+        return retry_with_backoff(
+            _do, transient_exceptions=transient, context="OpenAI LLM",
         )
-        return response.choices[0].message.content

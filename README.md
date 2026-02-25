@@ -1,5 +1,8 @@
 # consolidation-memory
 
+[![CI](https://github.com/charliee1w/consolidation-memory/actions/workflows/test.yml/badge.svg)](https://github.com/charliee1w/consolidation-memory/actions/workflows/test.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/consolidation-memory/)
+
 **Your AI forgets everything between sessions. This fixes that.**
 
 A local-first memory system that stores, retrieves, and *consolidates* knowledge across conversations. Episodes go in, structured knowledge comes out — automatically, via a background LLM that clusters and synthesizes what it's learned.
@@ -38,6 +41,16 @@ AI:  (recalls your project uses CMake + MSVC on Windows)
 2. **Recall** — Semantic search with priority scoring (surprise, recency, access frequency)
 3. **Consolidate** — Background LLM clusters related episodes and synthesizes structured markdown knowledge documents
 
+### How Consolidation Works
+
+The consolidation engine runs on a background daemon thread (default: every 6 hours). It fetches all unconsolidated episodes, embeds them, and groups them using agglomerative hierarchical clustering with a configurable distance threshold. Each cluster represents a coherent topic.
+
+For each cluster, the engine checks existing knowledge topics for semantic overlap. If a matching topic exists (above the topic-match threshold), the cluster's episodes are merged into the existing document. Otherwise, a new knowledge document is synthesized from scratch.
+
+The LLM receives the cluster's episodes (with prompt injection patterns sanitized) and produces a structured markdown document with YAML frontmatter (title, summary, tags, confidence score). The engine validates the output, versions the previous document, writes the new one, and updates the SQLite metadata. Episodes that have been consolidated and aged past the prune threshold are soft-deleted to keep the FAISS index lean.
+
+All backends retry transient failures with exponential backoff. If 3 consecutive clusters fail (indicating the LLM backend is down), consolidation aborts early rather than burning through timeouts.
+
 ## Quick Start
 
 ```bash
@@ -61,16 +74,19 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
-Six tools become available:
+Eight tools become available:
 
 | Tool | What it does |
 |------|-------------|
 | `memory_store` | Save an episode (fact, solution, preference, exchange) |
-| `memory_recall` | Semantic search over episodes + knowledge |
+| `memory_store_batch` | Store multiple episodes in one call (single embed + FAISS batch) |
+| `memory_recall` | Semantic search over episodes + knowledge, with optional filters |
 | `memory_status` | System stats + health diagnostics |
 | `memory_forget` | Soft-delete an episode |
 | `memory_export` | Export everything to JSON |
 | `memory_correct` | Fix outdated knowledge documents |
+
+`memory_recall` supports optional filters: `content_types`, `tags`, `after`, `before` — all applied post-vector-search so you can narrow results to specific episode types or date ranges.
 
 ### Python API
 
@@ -111,7 +127,8 @@ consolidation-memory serve --rest --port 8080
 |--------|------|-------------|
 | `GET` | `/health` | Version + status |
 | `POST` | `/memory/store` | Store episode |
-| `POST` | `/memory/recall` | Semantic search |
+| `POST` | `/memory/store/batch` | Store multiple episodes |
+| `POST` | `/memory/recall` | Semantic search (with optional filters) |
 | `GET` | `/memory/status` | System statistics |
 | `DELETE` | `/memory/episodes/{id}` | Forget episode |
 | `POST` | `/memory/consolidate` | Trigger consolidation |

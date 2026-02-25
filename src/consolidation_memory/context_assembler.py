@@ -74,27 +74,60 @@ def recall(
     n_results: int = 10,
     include_knowledge: bool = True,
     vector_store: VectorStore | None = None,
+    *,
+    content_types: list[str] | None = None,
+    tags: list[str] | None = None,
+    after: str | None = None,
+    before: str | None = None,
 ) -> dict:
-    """Main retrieval function. Returns ranked episodes + knowledge excerpts."""
+    """Main retrieval function. Returns ranked episodes + knowledge excerpts.
+
+    Optional filters (all applied post-vector-search):
+        content_types: Only return episodes matching these types.
+        tags: Only return episodes that have at least one of these tags.
+        after: Only return episodes created after this ISO date string.
+        before: Only return episodes created before this ISO date string.
+    """
     n_results = min(n_results, RECALL_MAX_N)
 
+    # Fetch more candidates when filtering, since many will be discarded
+    fetch_k = n_results * 5 if (content_types or tags or after or before) else n_results * 3
+
     query_vec = backends.encode_query(query)
-    candidates = vector_store.search(query_vec, k=n_results * 3)
+    candidates = vector_store.search(query_vec, k=fetch_k)
 
     logger.debug(
-        "recall: query_len=%d, n_results=%d, vector_candidates=%d",
+        "recall: query_len=%d, n_results=%d, vector_candidates=%d, filters=%s",
         len(query), n_results, len(candidates),
+        {"content_types": content_types, "tags": tags, "after": after, "before": before},
     )
 
     # Batch-fetch all candidate episodes in one query instead of N individual SELECTs
     candidate_ids = [eid for eid, _ in candidates]
     episodes_by_id = get_episodes_batch(candidate_ids)
 
+    # Precompute filter sets
+    _ct_set = set(content_types) if content_types else None
+    _tag_set = set(tags) if tags else None
+
     scored = []
     for episode_id, similarity in candidates:
         ep = episodes_by_id.get(episode_id)
         if ep is None:
             continue
+
+        # Apply filters
+        if _ct_set and ep["content_type"] not in _ct_set:
+            continue
+        if _tag_set:
+            ep_tags = json.loads(ep["tags"]) if isinstance(ep["tags"], str) else ep["tags"]
+            if not _tag_set.intersection(ep_tags):
+                continue
+        if after and ep["created_at"] < after:
+            continue
+        if before and ep["created_at"] > before:
+            continue
+
         score = _priority_score(similarity, ep)
         scored.append((ep, score, similarity))
 

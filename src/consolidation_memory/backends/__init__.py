@@ -10,6 +10,8 @@ Backend is lazily instantiated on first use based on config.EMBEDDING_BACKEND.
 
 import logging
 import threading
+import time
+from typing import Callable, TypeVar
 
 import numpy as np
 
@@ -17,6 +19,43 @@ from consolidation_memory.backends.base import EmbeddingBackend, LLMBackend
 from consolidation_memory.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+def retry_with_backoff(
+    fn: Callable[[], T],
+    *,
+    max_retries: int = 3,
+    base_delay: float = 2.0,
+    transient_exceptions: tuple[type[Exception], ...] = (ConnectionError, TimeoutError, OSError),
+    context: str = "backend call",
+) -> T:
+    """Retry a callable with exponential backoff on transient errors.
+
+    Args:
+        fn: Zero-argument callable to retry.
+        max_retries: Maximum number of attempts.
+        base_delay: Base delay in seconds (multiplied by attempt number).
+        transient_exceptions: Exception types considered transient.
+        context: Description for log messages.
+
+    Returns:
+        Result of fn().
+
+    Raises:
+        The last caught exception if all retries fail.
+    """
+    last_err: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            return fn()
+        except transient_exceptions as e:
+            last_err = e
+            logger.warning("%s attempt %d/%d failed: %s", context, attempt + 1, max_retries, e)
+            if attempt < max_retries - 1:
+                time.sleep(base_delay * (attempt + 1))
+    raise last_err  # type: ignore[misc]
 
 _backend_lock = threading.Lock()
 _embedding_backend: EmbeddingBackend | None = None

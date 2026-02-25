@@ -81,6 +81,52 @@ MEMORY_STORE_SCHEMA: dict[str, Any] = {
     },
 }
 
+MEMORY_STORE_BATCH_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_store_batch",
+        "description": (
+            "Store multiple memory episodes in a single operation. "
+            "More efficient than calling memory_store repeatedly."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "episodes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": {
+                                "type": "string",
+                                "description": "The text content to store.",
+                            },
+                            "content_type": {
+                                "type": "string",
+                                "enum": ["exchange", "fact", "solution", "preference"],
+                                "default": "exchange",
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "surprise": {
+                                "type": "number",
+                                "minimum": 0.0,
+                                "maximum": 1.0,
+                                "default": 0.5,
+                            },
+                        },
+                        "required": ["content"],
+                    },
+                    "description": "List of episode objects to store.",
+                },
+            },
+            "required": ["episodes"],
+        },
+    },
+}
+
 MEMORY_RECALL_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -109,6 +155,27 @@ MEMORY_RECALL_SCHEMA: dict[str, Any] = {
                     "type": "boolean",
                     "description": "Whether to include consolidated knowledge documents.",
                     "default": True,
+                },
+                "content_types": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["exchange", "fact", "solution", "preference"],
+                    },
+                    "description": "Filter to specific content types (e.g. ['solution', 'fact']).",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Filter to episodes with at least one matching tag.",
+                },
+                "after": {
+                    "type": "string",
+                    "description": "Only episodes created after this ISO date (e.g. '2025-01-01').",
+                },
+                "before": {
+                    "type": "string",
+                    "description": "Only episodes created before this ISO date.",
                 },
             },
             "required": ["query"],
@@ -196,6 +263,7 @@ MEMORY_CORRECT_SCHEMA: dict[str, Any] = {
 # Convenience list of all tool schemas
 openai_tools: list[dict[str, Any]] = [
     MEMORY_STORE_SCHEMA,
+    MEMORY_STORE_BATCH_SCHEMA,
     MEMORY_RECALL_SCHEMA,
     MEMORY_STATUS_SCHEMA,
     MEMORY_FORGET_SCHEMA,
@@ -242,11 +310,19 @@ def dispatch_tool_call(
         )
         return dataclasses.asdict(result)
 
+    elif name == "memory_store_batch":
+        result = client.store_batch(episodes=arguments["episodes"])
+        return dataclasses.asdict(result)
+
     elif name == "memory_recall":
         result = client.recall(
             query=arguments["query"],
             n_results=arguments.get("n_results", 10),
             include_knowledge=arguments.get("include_knowledge", True),
+            content_types=arguments.get("content_types"),
+            tags=arguments.get("tags"),
+            after=arguments.get("after"),
+            before=arguments.get("before"),
         )
         return dataclasses.asdict(result)
 

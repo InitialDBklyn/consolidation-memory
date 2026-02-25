@@ -82,3 +82,13 @@ class CorrectResult:
     filename: str | None = None
     title: str | None = None
     message: str | None = None
+
+
+@dataclass
+class BatchStoreResult:
+    """Result of a batch memory store operation."""
+
+    status: str  # "stored"
+    stored: int = 0
+    duplicates: int = 0
+    results: list[dict] = field(default_factory=list)

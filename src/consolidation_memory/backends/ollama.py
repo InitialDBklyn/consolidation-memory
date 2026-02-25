@@ -9,7 +9,11 @@ import logging
 import httpx
 import numpy as np
 
+from consolidation_memory.backends import retry_with_backoff
+
 logger = logging.getLogger(__name__)
+
+_TRANSIENT = (httpx.HTTPError, httpx.TimeoutException, ConnectionError, TimeoutError, OSError)
 
 
 class OllamaEmbeddingBackend:
@@ -38,14 +42,18 @@ class OllamaEmbeddingBackend:
         return data["embeddings"][0]
 
     def encode_documents(self, texts: list[str]) -> np.ndarray:
-        # Ollama /api/embed supports batch via input list
-        response = httpx.post(
-            f"{self._api_base}/api/embed",
-            json={"model": self._model_name, "input": texts},
-            timeout=60.0,
+        def _do():
+            response = httpx.post(
+                f"{self._api_base}/api/embed",
+                json={"model": self._model_name, "input": texts},
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            return response.json()
+
+        data = retry_with_backoff(
+            _do, transient_exceptions=_TRANSIENT, context="Ollama embedding",
         )
-        response.raise_for_status()
-        data = response.json()
         vecs = np.array(data["embeddings"], dtype=np.float32)
         if self._dim == 0:
             self._dim = vecs.shape[1]
@@ -76,21 +84,26 @@ class OllamaLLMBackend:
         self._temperature = temperature
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
-        response = httpx.post(
-            f"{self._api_base}/api/chat",
-            json={
-                "model": self._model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "stream": False,
-                "options": {
-                    "num_predict": self._max_tokens,
-                    "temperature": self._temperature,
+        def _do():
+            response = httpx.post(
+                f"{self._api_base}/api/chat",
+                json={
+                    "model": self._model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "stream": False,
+                    "options": {
+                        "num_predict": self._max_tokens,
+                        "temperature": self._temperature,
+                    },
                 },
-            },
-            timeout=120.0,
+                timeout=120.0,
+            )
+            response.raise_for_status()
+            return response.json()["message"]["content"]
+
+        return retry_with_backoff(
+            _do, transient_exceptions=_TRANSIENT, context="Ollama LLM",
         )
-        response.raise_for_status()
-        return response.json()["message"]["content"]

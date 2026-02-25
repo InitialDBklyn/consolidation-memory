@@ -46,6 +46,14 @@ class RecallRequest(BaseModel):
     query: str
     n_results: int = Field(default=10, ge=1, le=50)
     include_knowledge: bool = True
+    content_types: list[str] | None = None
+    tags: list[str] | None = None
+    after: str | None = None
+    before: str | None = None
+
+
+class BatchStoreRequest(BaseModel):
+    episodes: list[dict]
 
 
 class CorrectRequest(BaseModel):
@@ -94,6 +102,12 @@ def create_app() -> FastAPI:
         )
         return dataclasses.asdict(result)
 
+    @app.post("/memory/store/batch")
+    async def store_batch(req: BatchStoreRequest):
+        """Store multiple memory episodes in a single operation."""
+        result = _client.store_batch(episodes=req.episodes)
+        return dataclasses.asdict(result)
+
     @app.post("/memory/recall")
     async def recall(req: RecallRequest):
         """Retrieve relevant memories by semantic similarity."""
@@ -101,6 +115,10 @@ def create_app() -> FastAPI:
             query=req.query,
             n_results=req.n_results,
             include_knowledge=req.include_knowledge,
+            content_types=req.content_types,
+            tags=req.tags,
+            after=req.after,
+            before=req.before,
         )
         return dataclasses.asdict(result)
 

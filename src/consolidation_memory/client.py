@@ -24,6 +24,7 @@ from consolidation_memory import __version__
 from consolidation_memory.types import (
     ContentType,
     StoreResult,
+    BatchStoreResult,
     RecallResult,
     ForgetResult,
     StatusResult,
@@ -185,11 +186,116 @@ class MemoryClient:
             tags=tags or [],
         )
 
+    def store_batch(
+        self,
+        episodes: list[dict],
+    ) -> BatchStoreResult:
+        """Store multiple memory episodes in a single operation.
+
+        More efficient than calling store() N times: single embedding call,
+        single FAISS batch add, single DB transaction for dedup checks.
+
+        Args:
+            episodes: List of dicts, each with keys:
+                - content (str, required)
+                - content_type (str, default 'exchange')
+                - tags (list[str], optional)
+                - surprise (float, default 0.5)
+
+        Returns:
+            BatchStoreResult with per-episode status.
+        """
+        from consolidation_memory.database import insert_episode, get_episode, soft_delete_episode
+        from consolidation_memory.backends import encode_documents
+        from consolidation_memory.config import DEDUP_SIMILARITY_THRESHOLD, DEDUP_ENABLED
+
+        if not episodes:
+            return BatchStoreResult(status="stored", stored=0, duplicates=0)
+
+        self._vector_store.reload_if_stale()
+
+        # Validate and normalize
+        valid_types = {ct.value for ct in ContentType}
+        items = []
+        for ep in episodes:
+            ct = ep.get("content_type", "exchange")
+            if ct not in valid_types:
+                ct = ContentType.EXCHANGE.value
+            items.append({
+                "content": ep["content"],
+                "content_type": ct,
+                "tags": ep.get("tags"),
+                "surprise": max(0.0, min(1.0, ep.get("surprise", 0.5))),
+            })
+
+        # Single embedding call for all texts
+        try:
+            embeddings = encode_documents([it["content"] for it in items])
+        except ConnectionError as e:
+            logger.error("Embedding backend unreachable during batch store: %s", e)
+            return BatchStoreResult(
+                status="backend_unavailable",
+                results=[{"status": "error", "message": str(e)}],
+            )
+
+        results = []
+        stored = 0
+        duplicates = 0
+
+        for i, item in enumerate(items):
+            emb = embeddings[i]
+
+            # Dedup check
+            if DEDUP_ENABLED and self._vector_store.size > 0:
+                matches = self._vector_store.search(emb, k=1)
+                if matches:
+                    best_id, best_sim = matches[0]
+                    if best_sim >= DEDUP_SIMILARITY_THRESHOLD:
+                        existing = get_episode(best_id)
+                        if existing is not None:
+                            duplicates += 1
+                            results.append({
+                                "status": "duplicate_detected",
+                                "existing_id": best_id,
+                                "similarity": round(float(best_sim), 4),
+                            })
+                            continue
+
+            episode_id = insert_episode(
+                content=item["content"],
+                content_type=item["content_type"],
+                tags=item["tags"],
+                surprise_score=item["surprise"],
+            )
+
+            try:
+                self._vector_store.add(episode_id, emb)
+            except Exception as e:
+                soft_delete_episode(episode_id)
+                logger.error("FAISS add failed for %s in batch, rolled back: %s", episode_id, e)
+                results.append({"status": "error", "message": str(e)})
+                continue
+
+            stored += 1
+            results.append({
+                "status": "stored",
+                "id": episode_id,
+                "content_type": item["content_type"],
+            })
+
+        logger.info("Batch store: %d stored, %d duplicates out of %d", stored, duplicates, len(items))
+        return BatchStoreResult(status="stored", stored=stored, duplicates=duplicates, results=results)
+
     def recall(
         self,
         query: str,
         n_results: int = 10,
         include_knowledge: bool = True,
+        *,
+        content_types: list[str] | None = None,
+        tags: list[str] | None = None,
+        after: str | None = None,
+        before: str | None = None,
     ) -> RecallResult:
         """Retrieve relevant memories by semantic similarity.
 
@@ -197,6 +303,10 @@ class MemoryClient:
             query: Natural language description of what to recall.
             n_results: Maximum episode results (1–50).
             include_knowledge: Include consolidated knowledge documents.
+            content_types: Filter to specific content types (e.g. ['solution', 'fact']).
+            tags: Filter to episodes with at least one matching tag.
+            after: Only episodes created after this ISO date (e.g. '2025-01-01').
+            before: Only episodes created before this ISO date.
 
         Returns:
             RecallResult with episodes and knowledge lists.
@@ -212,6 +322,10 @@ class MemoryClient:
                 n_results=n_results,
                 include_knowledge=include_knowledge,
                 vector_store=self._vector_store,
+                content_types=content_types,
+                tags=tags,
+                after=after,
+                before=before,
             )
         except ConnectionError as e:
             logger.error("Embedding backend unreachable during recall: %s", e)
