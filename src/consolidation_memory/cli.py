@@ -245,7 +245,7 @@ def cmd_export():
         "stats": {"episode_count": len(episodes), "knowledge_count": len(knowledge)},
     }
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     export_path = BACKUP_DIR / f"memory_export_{timestamp}.json"
     export_path.write_text(json.dumps(snapshot, indent=2, default=str), encoding="utf-8")
 
@@ -299,6 +299,7 @@ def cmd_import(path: str):
             content_type=ep.get("content_type", "exchange"),
             tags=tags,
             surprise_score=ep.get("surprise_score", 0.5),
+            episode_id=ep["id"],
         )
 
         # Re-embed with current backend

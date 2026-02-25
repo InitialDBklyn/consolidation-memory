@@ -381,6 +381,8 @@ def _adjust_surprise_scores() -> int:
 
         try:
             last_update = datetime.fromisoformat(ep["updated_at"])
+            if last_update.tzinfo is None:
+                last_update = last_update.replace(tzinfo=timezone.utc)
             days_inactive = (now - last_update).total_seconds() / 86400.0
         except (ValueError, TypeError):
             days_inactive = 0

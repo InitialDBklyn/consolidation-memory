@@ -229,8 +229,10 @@ def insert_episode(
     tags: list[str] | None = None,
     surprise_score: float = 0.5,
     source_session: str | None = None,
+    episode_id: str | None = None,
 ) -> str:
-    episode_id = str(uuid.uuid4())
+    if episode_id is None:
+        episode_id = str(uuid.uuid4())
     now = _now()
     with get_connection() as conn:
         conn.execute(

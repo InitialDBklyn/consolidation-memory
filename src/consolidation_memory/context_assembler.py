@@ -43,6 +43,9 @@ def invalidate_topic_cache() -> None:
 def _recency_decay(created_at_iso: str, half_life_days: float = RECENCY_HALF_LIFE_DAYS) -> float:
     try:
         created = datetime.fromisoformat(created_at_iso)
+        # Handle naive datetimes (no timezone info) by assuming UTC
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
         age_days = (datetime.now(timezone.utc) - created).total_seconds() / 86400.0
         return math.exp(-age_days / half_life_days)
     except Exception:

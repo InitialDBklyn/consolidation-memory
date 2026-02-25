@@ -483,6 +483,8 @@ class MemoryClient:
                 from datetime import datetime, timezone
                 try:
                     last_time = datetime.fromisoformat(completed_at)
+                    if last_time.tzinfo is None:
+                        last_time = last_time.replace(tzinfo=timezone.utc)
                     age_hours = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600
                     if age_hours > interval_hours * 2:
                         issues.append(
