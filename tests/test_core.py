@@ -401,7 +401,7 @@ class TestVersioning:
 
 class TestTopicCache:
     def test_cache_invalidation(self):
-        from consolidation_memory.topic_cache import _cache, _version, invalidate
+        from consolidation_memory.topic_cache import _cache, invalidate
         import consolidation_memory.topic_cache as tc
 
         # Populate cache with a known version
