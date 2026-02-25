@@ -27,6 +27,7 @@ class RecallResult:
     total_episodes: int = 0
     total_knowledge_topics: int = 0
     message: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -51,6 +52,7 @@ class StatusResult:
     db_size_mb: float = 0.0
     version: str = ""
     health: dict = field(default_factory=dict)
+    consolidation_metrics: list[dict] = field(default_factory=list)
 
 
 @dataclass

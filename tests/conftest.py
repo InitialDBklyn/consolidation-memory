@@ -55,6 +55,25 @@ def tmp_data_dir(tmp_path):
         patch("consolidation_memory.consolidation.KNOWLEDGE_VERSIONS_DIR", knowledge_versions),
         patch("consolidation_memory.consolidation.CONSOLIDATION_LOG_DIR", consol_log),
         patch("consolidation_memory.consolidation.CONSOLIDATION_PRUNE_ENABLED", False),
+        # context_assembler module-level imports
+        patch("consolidation_memory.context_assembler.RECENCY_HALF_LIFE_DAYS", 30.0),
+        patch("consolidation_memory.context_assembler.KNOWLEDGE_SEMANTIC_WEIGHT", 0.8),
+        patch("consolidation_memory.context_assembler.KNOWLEDGE_KEYWORD_WEIGHT", 0.2),
+        patch("consolidation_memory.context_assembler.KNOWLEDGE_RELEVANCE_THRESHOLD", 0.15),
+        patch("consolidation_memory.context_assembler.KNOWLEDGE_MAX_RESULTS", 5),
+        # consolidation module-level imports
+        patch("consolidation_memory.consolidation.CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD", 0.75),
+        patch("consolidation_memory.consolidation.CONSOLIDATION_CONFIDENCE_COHERENCE_W", 0.6),
+        patch("consolidation_memory.consolidation.CONSOLIDATION_CONFIDENCE_SURPRISE_W", 0.4),
+        patch(
+            "consolidation_memory.consolidation.CONSOLIDATION_STOPWORDS",
+            frozenset({"the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "with", "is", "at", "it"}),
+        ),
+        patch("consolidation_memory.consolidation.CONSOLIDATION_MAX_DURATION", 1800),
+        patch("consolidation_memory.consolidation.CONSOLIDATION_MAX_ATTEMPTS", 5),
+        patch("consolidation_memory.consolidation.LLM_CALL_TIMEOUT", 120),
+        # vector_store module-level imports
+        patch("consolidation_memory.vector_store.FAISS_SEARCH_FETCH_K_PADDING", 0),
     ]
 
     for p in patches:
@@ -68,6 +87,10 @@ def tmp_data_dir(tmp_path):
         except Exception:
             pass
         database._local.conn = None
+
+    # Reset backends and circuit breakers so state doesn't leak between tests
+    from consolidation_memory.backends import reset_backends
+    reset_backends()
 
     yield tmp_path
 

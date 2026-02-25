@@ -14,7 +14,7 @@ from consolidation_memory.backends import encode_documents
 
 logger = logging.getLogger(__name__)
 
-_lock = threading.Lock()
+_lock = threading.Lock()  # Guards _cache dict for thread-safe read/write of topic embeddings
 _cache: dict = {
     "topic_count": -1,
     "texts": [],
@@ -48,7 +48,7 @@ def get_topic_vecs() -> tuple[list[dict], np.ndarray | None]:
     try:
         vecs = encode_documents(summary_texts)
     except Exception as e:
-        logger.warning("Failed to embed topic summaries: %s", e)
+        logger.warning("Failed to embed topic summaries: %s", e, exc_info=True)
         return topics, None
 
     with _lock:

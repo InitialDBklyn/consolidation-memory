@@ -13,11 +13,25 @@ import logging
 import numpy as np
 
 from consolidation_memory.backends.base import EmbeddingBackend, LLMBackend
+from consolidation_memory.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
 _embedding_backend: EmbeddingBackend | None = None
 _llm_backend: LLMBackend | None = None
+_embed_circuit: CircuitBreaker | None = None
+
+
+def _get_embed_circuit() -> CircuitBreaker:
+    global _embed_circuit
+    if _embed_circuit is None:
+        from consolidation_memory.config import CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_COOLDOWN
+        _embed_circuit = CircuitBreaker(
+            threshold=CIRCUIT_BREAKER_THRESHOLD,
+            cooldown=CIRCUIT_BREAKER_COOLDOWN,
+            name="embedding",
+        )
+    return _embed_circuit
 
 
 def _create_embedding_backend() -> EmbeddingBackend:
@@ -120,21 +134,44 @@ def get_llm_backend() -> LLMBackend | None:
 
 def reset_backends() -> None:
     """Reset cached backends (for testing or config reload)."""
-    global _embedding_backend, _llm_backend
+    global _embedding_backend, _llm_backend, _embed_circuit
     _embedding_backend = None
     _llm_backend = None
+    _embed_circuit = None
 
 
 # ── Drop-in compatibility functions ──────────────────────────────────────────
 
 def encode_documents(texts: list[str]) -> np.ndarray:
     """Encode texts for storage. Drop-in replacement for old embeddings.py."""
-    return get_embedding_backend().encode_documents(texts)
+    cb = _get_embed_circuit()
+    cb.check()
+    try:
+        result = get_embedding_backend().encode_documents(texts)
+        cb.record_success()
+        return result
+    except ConnectionError:
+        cb.record_failure()
+        raise
+    except Exception as e:
+        cb.record_failure()
+        raise ConnectionError(str(e)) from e
 
 
 def encode_query(text: str) -> np.ndarray:
     """Encode a single query for retrieval. Drop-in replacement for old embeddings.py."""
-    return get_embedding_backend().encode_query(text)
+    cb = _get_embed_circuit()
+    cb.check()
+    try:
+        result = get_embedding_backend().encode_query(text)
+        cb.record_success()
+        return result
+    except ConnectionError:
+        cb.record_failure()
+        raise
+    except Exception as e:
+        cb.record_failure()
+        raise ConnectionError(str(e)) from e
 
 
 def get_dimension() -> int:

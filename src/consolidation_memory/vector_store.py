@@ -28,6 +28,7 @@ from consolidation_memory.config import (
     FAISS_TOMBSTONE_PATH,
     FAISS_RELOAD_SIGNAL,
     EMBEDDING_DIMENSION,
+    FAISS_SEARCH_FETCH_K_PADDING,
     FAISS_SIZE_WARNING_THRESHOLD,
 )
 
@@ -45,6 +46,7 @@ class VectorStore:
         self._load_or_create()
 
     def _load_or_create(self) -> None:
+        """Load existing FAISS index and id map from disk, or create empty. Validates dimension and id-map integrity on load."""
         if FAISS_INDEX_PATH.exists() and FAISS_ID_MAP_PATH.exists():
             logger.info("Loading FAISS index from %s", FAISS_INDEX_PATH)
             self._index = faiss.read_index(str(FAISS_INDEX_PATH))
@@ -143,6 +145,7 @@ class VectorStore:
     # ── Concurrency ──────────────────────────────────────────────────────────
 
     def reload_if_stale(self) -> bool:
+        """Reload FAISS index if the reload signal file is newer than last load. Thread-safe via double-checked lock. Returns True if reloaded."""
         if not FAISS_RELOAD_SIGNAL.exists():
             return False
         try:
@@ -164,7 +167,7 @@ class VectorStore:
 
     @staticmethod
     def signal_reload() -> None:
-        """Write signal file to notify other processes to reload FAISS."""
+        """Write reload signal file to notify other processes to reload FAISS index."""
         FAISS_RELOAD_SIGNAL.parent.mkdir(parents=True, exist_ok=True)
         FAISS_RELOAD_SIGNAL.write_text(str(time.time()), encoding="utf-8")
         logger.info("Wrote FAISS reload signal")
@@ -172,6 +175,7 @@ class VectorStore:
     # ── Add ──────────────────────────────────────────────────────────────────
 
     def add(self, episode_id: str, embedding: np.ndarray) -> None:
+        """Add a single vector with its episode UUID. Persists to disk immediately."""
         with self._lock:
             vec = embedding.reshape(1, -1).astype(np.float32)
             self._index.add(vec)
@@ -180,6 +184,7 @@ class VectorStore:
             self._save()
 
     def add_batch(self, episode_ids: list[str], embeddings: np.ndarray) -> None:
+        """Add multiple vectors with UUIDs. More efficient than repeated add() calls."""
         with self._lock:
             vecs = embeddings.astype(np.float32)
             self._index.add(vecs)
@@ -192,6 +197,7 @@ class VectorStore:
     # ── Search ───────────────────────────────────────────────────────────────
 
     def search(self, query_embedding: np.ndarray, k: int = 10) -> list[tuple[str, float]]:
+        """Return top-k (uuid, similarity) pairs via cosine similarity, excluding tombstoned entries."""
         with self._lock:
             if self._index.ntotal == 0:
                 logger.debug("search: index empty, returning []")
@@ -200,7 +206,8 @@ class VectorStore:
             if effective_size <= 0:
                 logger.debug("search: all %d vectors tombstoned, returning []", self._index.ntotal)
                 return []
-            fetch_k = min(k + len(self._tombstones), self._index.ntotal)
+            padding = FAISS_SEARCH_FETCH_K_PADDING if FAISS_SEARCH_FETCH_K_PADDING > 0 else len(self._tombstones)
+            fetch_k = min(k + padding, self._index.ntotal)
             logger.debug(
                 "search: ntotal=%d, tombstones=%d, effective=%d, k=%d, fetch_k=%d",
                 self._index.ntotal, len(self._tombstones), effective_size, k, fetch_k,
@@ -229,6 +236,7 @@ class VectorStore:
     # ── Remove (tombstone-based, O(1)) ───────────────────────────────────────
 
     def remove(self, episode_id: str) -> bool:
+        """Tombstone a vector by UUID. O(1), does not rebuild index."""
         with self._lock:
             if episode_id not in self._uuid_to_pos:
                 return False
@@ -237,6 +245,7 @@ class VectorStore:
             return True
 
     def remove_batch(self, episode_ids: list[str]) -> int:
+        """Tombstone multiple vectors by UUID. Returns count actually tombstoned."""
         with self._lock:
             count = 0
             for uid in episode_ids:
@@ -250,6 +259,7 @@ class VectorStore:
     # ── Compaction ───────────────────────────────────────────────────────────
 
     def compact(self) -> int:
+        """Rebuild FAISS index without tombstoned vectors. Returns count of tombstones removed."""
         with self._lock:
             if not self._tombstones:
                 return 0
@@ -295,6 +305,7 @@ class VectorStore:
     # ── Reconstruct ──────────────────────────────────────────────────────────
 
     def reconstruct_batch(self, episode_ids: list[str]) -> tuple[list[str], np.ndarray] | None:
+        """Retrieve raw vectors for given episode UUIDs from FAISS. Skips tombstoned or missing entries."""
         with self._lock:
             found_ids = []
             positions = []

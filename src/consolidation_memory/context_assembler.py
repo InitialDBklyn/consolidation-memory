@@ -14,14 +14,19 @@ import numpy as np
 from consolidation_memory.config import (
     CONSOLIDATION_PRIORITY_WEIGHTS,
     KNOWLEDGE_DIR,
+    KNOWLEDGE_KEYWORD_WEIGHT,
+    KNOWLEDGE_MAX_RESULTS,
+    KNOWLEDGE_RELEVANCE_THRESHOLD,
+    KNOWLEDGE_SEMANTIC_WEIGHT,
     RECALL_MAX_N,
+    RECENCY_HALF_LIFE_DAYS,
 )
 from consolidation_memory.database import (
     get_episodes_batch,
     increment_access,
     increment_topic_access,
 )
-from consolidation_memory.backends import encode_query
+from consolidation_memory import backends
 from consolidation_memory.vector_store import VectorStore
 from consolidation_memory import topic_cache
 
@@ -35,7 +40,7 @@ def invalidate_topic_cache() -> None:
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
 
-def _recency_decay(created_at_iso: str, half_life_days: float = 30.0) -> float:
+def _recency_decay(created_at_iso: str, half_life_days: float = RECENCY_HALF_LIFE_DAYS) -> float:
     try:
         created = datetime.fromisoformat(created_at_iso)
         age_days = (datetime.now(timezone.utc) - created).total_seconds() / 86400.0
@@ -70,7 +75,7 @@ def recall(
     """Main retrieval function. Returns ranked episodes + knowledge excerpts."""
     n_results = min(n_results, RECALL_MAX_N)
 
-    query_vec = encode_query(query)
+    query_vec = backends.encode_query(query)
     candidates = vector_store.search(query_vec, k=n_results * 3)
 
     logger.debug(
@@ -116,30 +121,39 @@ def recall(
     increment_access(accessed_ids)
 
     knowledge = []
+    warnings = []
     if include_knowledge:
-        knowledge = _search_knowledge(query, query_vec)
+        knowledge, warnings = _search_knowledge(query, query_vec)
 
     return {
         "episodes": episodes,
         "knowledge": knowledge,
+        "warnings": warnings,
     }
 
 
-def _search_knowledge(query: str, query_vec: np.ndarray | None = None) -> list[dict]:
+def _search_knowledge(
+    query: str, query_vec: np.ndarray | None = None,
+) -> tuple[list[dict], list[str]]:
+    warnings: list[str] = []
     topics, summary_vecs = topic_cache.get_topic_vecs()
     if not topics:
-        return []
+        return [], warnings
 
     try:
         if query_vec is None:
-            query_vec = encode_query(query)
+            query_vec = backends.encode_query(query)
         if summary_vecs is not None:
             sims = (query_vec @ summary_vecs.T).flatten()
         else:
             sims = None
     except Exception as e:
-        logger.warning("Semantic knowledge search failed, falling back to keyword: %s", e)
+        logger.warning(
+            "Semantic knowledge search failed, falling back to keyword: %s", e,
+            exc_info=True,
+        )
         sims = None
+        warnings.append("Knowledge search fell back to keyword-only (embedding failed)")
 
     query_lower = query.lower()
     query_words = set(query_lower.split())
@@ -153,9 +167,9 @@ def _search_knowledge(query: str, query_vec: np.ndarray | None = None) -> list[d
         kw_hits = sum(1 for w in query_words if w in title_lower or w in summary_lower)
         kw_score = kw_hits / len(query_words) if query_words else 0
 
-        relevance = sem_score * 0.8 + kw_score * 0.2
+        relevance = sem_score * KNOWLEDGE_SEMANTIC_WEIGHT + kw_score * KNOWLEDGE_KEYWORD_WEIGHT
 
-        if relevance < 0.15:
+        if relevance < KNOWLEDGE_RELEVANCE_THRESHOLD:
             continue
 
         filepath = KNOWLEDGE_DIR / topic["filename"]
@@ -174,12 +188,12 @@ def _search_knowledge(query: str, query_vec: np.ndarray | None = None) -> list[d
         })
 
     logger.debug(
-        "knowledge_search: %d topics checked, %d passed relevance threshold (>=0.15)",
-        len(topics), len(scored_topics),
+        "knowledge_search: %d topics checked, %d passed relevance threshold (>=%s)",
+        len(topics), len(scored_topics), KNOWLEDGE_RELEVANCE_THRESHOLD,
     )
 
     if scored_topics:
         increment_topic_access([t["filename"] for t in scored_topics])
 
     scored_topics.sort(key=lambda x: x["relevance"], reverse=True)
-    return scored_topics[:5]
+    return scored_topics[:KNOWLEDGE_MAX_RESULTS], warnings

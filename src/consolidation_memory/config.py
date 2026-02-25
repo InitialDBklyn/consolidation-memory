@@ -104,6 +104,10 @@ EMBEDDING_API_KEY = _embed.get("api_key", "")
 FAISS_SIZE_WARNING_THRESHOLD = 10_000
 FAISS_COMPACTION_THRESHOLD = 0.2
 
+# ── FAISS tuning ─────────────────────────────────────────────────────────
+_faiss = _cfg.get("faiss", {})
+FAISS_SEARCH_FETCH_K_PADDING = int(_faiss.get("search_fetch_k_padding", 0))  # 0 = auto (tombstone count)
+
 # ── LLM API (consolidation summarization) ────────────────────────────────────
 _llm = _cfg.get("llm", {})
 
@@ -114,6 +118,7 @@ LLM_MAX_TOKENS = int(_llm.get("max_tokens", 2048))
 LLM_TEMPERATURE = float(_llm.get("temperature", 0.3))
 LLM_MIN_P = float(_llm.get("min_p", 0.05))
 LLM_API_KEY = _llm.get("api_key", "")
+LLM_CALL_TIMEOUT = float(_llm.get("call_timeout", 120))
 LLM_VALIDATION_RETRY = bool(_cfg.get("consolidation", {}).get("validation_retry", True))
 
 # ── Consolidation ────────────────────────────────────────────────────────────
@@ -127,6 +132,14 @@ CONSOLIDATION_MAX_CLUSTER_SIZE = int(_consol.get("max_cluster_size", 20))
 CONSOLIDATION_PRUNE_ENABLED = bool(_consol.get("prune_enabled", False))
 CONSOLIDATION_PRUNE_AFTER_DAYS = int(_consol.get("prune_after_days", 30))
 CONSOLIDATION_MAX_EPISODES_PER_RUN = int(_consol.get("max_episodes_per_run", 200))
+CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD = float(_consol.get("topic_semantic_match_threshold", 0.75))
+CONSOLIDATION_CONFIDENCE_COHERENCE_W = float(_consol.get("cluster_confidence_coherence_weight", 0.6))
+CONSOLIDATION_CONFIDENCE_SURPRISE_W = float(_consol.get("cluster_confidence_surprise_weight", 0.4))
+CONSOLIDATION_MAX_DURATION = float(_consol.get("max_duration", 1800))
+CONSOLIDATION_MAX_ATTEMPTS = int(_consol.get("max_attempts", 5))
+_DEFAULT_STOPWORDS = frozenset({"the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "with", "is", "at", "it"})
+_extra_sw = _consol.get("extra_stopwords", [])
+CONSOLIDATION_STOPWORDS = _DEFAULT_STOPWORDS | frozenset(_extra_sw)
 CONSOLIDATION_PRIORITY_WEIGHTS = {
     "surprise": 0.4,
     "recency": 0.35,
@@ -157,6 +170,19 @@ MAX_BACKUPS = 5
 _recall = _cfg.get("recall", {})
 RECALL_DEFAULT_N = int(_recall.get("default_n", 10))
 RECALL_MAX_N = int(_recall.get("max_n", 50))
+
+# ── Retrieval tuning ────────────────────────────────────────────────────
+_retrieval = _cfg.get("retrieval", {})
+RECENCY_HALF_LIFE_DAYS = float(_retrieval.get("recency_half_life_days", 30.0))
+KNOWLEDGE_SEMANTIC_WEIGHT = float(_retrieval.get("knowledge_semantic_weight", 0.8))
+KNOWLEDGE_KEYWORD_WEIGHT = float(_retrieval.get("knowledge_keyword_weight", 0.2))
+KNOWLEDGE_RELEVANCE_THRESHOLD = float(_retrieval.get("knowledge_relevance_threshold", 0.15))
+KNOWLEDGE_MAX_RESULTS = int(_retrieval.get("knowledge_max_results", 5))
+
+# ── Circuit breaker ─────────────────────────────────────────────────────
+_cb = _cfg.get("circuit_breaker", {})
+CIRCUIT_BREAKER_THRESHOLD = int(_cb.get("threshold", 3))
+CIRCUIT_BREAKER_COOLDOWN = float(_cb.get("cooldown", 60.0))
 
 
 # ── Validation ───────────────────────────────────────────────────────────────

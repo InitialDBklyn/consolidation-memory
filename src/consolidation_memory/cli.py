@@ -12,7 +12,9 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 
 from consolidation_memory import __version__
 
@@ -389,9 +391,44 @@ def cmd_reindex():
     index.add(all_vecs_arr)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    faiss.write_index(index, str(FAISS_INDEX_PATH))
-    FAISS_ID_MAP_PATH.write_text(json.dumps(all_ids), encoding="utf-8")
-    FAISS_TOMBSTONE_PATH.write_text("[]", encoding="utf-8")
+
+    # Atomic swap: write to temp files, then rename
+    parent = str(FAISS_INDEX_PATH.parent)
+
+    idx_fd, idx_tmp = tempfile.mkstemp(dir=parent, suffix=".faiss.tmp")
+    os.close(idx_fd)
+    try:
+        faiss.write_index(index, idx_tmp)
+    except Exception:
+        os.unlink(idx_tmp)
+        print("Failed to write new FAISS index. Original index unchanged.")
+        return
+
+    map_fd, map_tmp = tempfile.mkstemp(dir=parent, suffix=".json.tmp")
+    try:
+        with os.fdopen(map_fd, "w") as f:
+            json.dump(all_ids, f)
+    except Exception:
+        os.unlink(idx_tmp)
+        os.unlink(map_tmp)
+        print("Failed to write id map. Original index unchanged.")
+        return
+
+    tomb_fd, tomb_tmp = tempfile.mkstemp(dir=parent, suffix=".json.tmp")
+    try:
+        with os.fdopen(tomb_fd, "w") as f:
+            json.dump([], f)
+    except Exception:
+        os.unlink(idx_tmp)
+        os.unlink(map_tmp)
+        os.unlink(tomb_tmp)
+        print("Failed to write tombstones. Original index unchanged.")
+        return
+
+    # All writes succeeded — atomic swap
+    os.replace(idx_tmp, str(FAISS_INDEX_PATH))
+    os.replace(map_tmp, str(FAISS_ID_MAP_PATH))
+    os.replace(tomb_tmp, str(FAISS_TOMBSTONE_PATH))
 
     VectorStore.signal_reload()
 

@@ -225,6 +225,7 @@ class MemoryClient:
             knowledge=result["knowledge"],
             total_episodes=stats["episodic_buffer"]["total"],
             total_knowledge_topics=stats["knowledge_base"]["total_topics"],
+            warnings=result.get("warnings", []),
         )
 
     def status(self) -> StatusResult:
@@ -248,6 +249,9 @@ class MemoryClient:
 
         health = self._compute_health(last_run, CONSOLIDATION_INTERVAL_HOURS, FAISS_COMPACTION_THRESHOLD)
 
+        from consolidation_memory.database import get_consolidation_metrics
+        metrics = get_consolidation_metrics(limit=10)
+
         return StatusResult(
             episodic_buffer=stats["episodic_buffer"],
             knowledge_base=stats["knowledge_base"],
@@ -259,6 +263,7 @@ class MemoryClient:
             db_size_mb=db_size_mb,
             version=__version__,
             health=health,
+            consolidation_metrics=metrics,
         )
 
     def forget(self, episode_id: str) -> ForgetResult:

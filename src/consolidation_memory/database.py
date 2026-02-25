@@ -20,11 +20,31 @@ _local = threading.local()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 3
 
 # Future migrations go here: version -> list of SQL statements
 MIGRATIONS: dict[int, list[str]] = {
-    # 2: ["ALTER TABLE episodes ADD COLUMN embedding_model TEXT;"],
+    2: [
+        "ALTER TABLE episodes ADD COLUMN consolidation_attempts INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE episodes ADD COLUMN last_consolidation_attempt TEXT",
+    ],
+    3: [
+        """CREATE TABLE IF NOT EXISTS consolidation_metrics (
+            id                  TEXT PRIMARY KEY,
+            run_id              TEXT NOT NULL,
+            timestamp           TEXT NOT NULL,
+            clusters_succeeded  INTEGER NOT NULL DEFAULT 0,
+            clusters_failed     INTEGER NOT NULL DEFAULT 0,
+            avg_confidence      REAL NOT NULL DEFAULT 0.0,
+            episodes_processed  INTEGER NOT NULL DEFAULT 0,
+            duration_seconds    REAL NOT NULL DEFAULT 0.0,
+            api_calls           INTEGER NOT NULL DEFAULT 0,
+            topics_created      INTEGER NOT NULL DEFAULT 0,
+            topics_updated      INTEGER NOT NULL DEFAULT 0,
+            episodes_pruned     INTEGER NOT NULL DEFAULT 0
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON consolidation_metrics(timestamp)",
+    ],
 }
 
 
@@ -141,7 +161,13 @@ def _check_and_migrate(conn: sqlite3.Connection) -> None:
     current = row["v"] if row and row["v"] is not None else 0
 
     if current == 0:
-        # First time: record initial version
+        # First time: apply all migrations then record current version.
+        # The base CREATE TABLE statements only define the v1 schema;
+        # columns and tables added in later migrations must still be executed.
+        for version in range(2, CURRENT_SCHEMA_VERSION + 1):
+            if version in MIGRATIONS:
+                for sql in MIGRATIONS[version]:
+                    conn.execute(sql)
         conn.execute(
             "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
             (CURRENT_SCHEMA_VERSION, _now()),
@@ -207,13 +233,13 @@ def get_episodes_batch(episode_ids: list[str]) -> dict[str, dict[str, Any]]:
     return {row["id"]: dict(row) for row in rows}
 
 
-def get_unconsolidated_episodes(limit: int = 200) -> list[dict[str, Any]]:
+def get_unconsolidated_episodes(limit: int = 200, max_attempts: int = 5) -> list[dict[str, Any]]:
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT * FROM episodes
-               WHERE consolidated = 0 AND deleted = 0
+               WHERE consolidated = 0 AND deleted = 0 AND consolidation_attempts < ?
                ORDER BY created_at DESC LIMIT ?""",
-            (limit,),
+            (max_attempts, limit),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -456,3 +482,57 @@ def get_stats() -> dict[str, Any]:
             "total_facts": kt_counts["total_facts"],
         },
     }
+
+
+# ── Consolidation Attempt Tracking ────────────────────────────────────────────
+
+def increment_consolidation_attempts(episode_ids: list[str]) -> None:
+    """Record a failed consolidation attempt for the given episodes."""
+    if not episode_ids:
+        return
+    now = _now()
+    with get_connection() as conn:
+        placeholders = ",".join("?" for _ in episode_ids)
+        conn.execute(
+            f"UPDATE episodes SET consolidation_attempts = consolidation_attempts + 1, "
+            f"last_consolidation_attempt = ? WHERE id IN ({placeholders})",
+            [now] + episode_ids,
+        )
+
+
+def insert_consolidation_metrics(
+    run_id: str,
+    clusters_succeeded: int,
+    clusters_failed: int,
+    avg_confidence: float,
+    episodes_processed: int,
+    duration_seconds: float,
+    api_calls: int,
+    topics_created: int,
+    topics_updated: int,
+    episodes_pruned: int,
+) -> str:
+    """Insert a consolidation run metrics record."""
+    metric_id = str(uuid.uuid4())
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO consolidation_metrics "
+            "(id, run_id, timestamp, clusters_succeeded, clusters_failed, "
+            "avg_confidence, episodes_processed, duration_seconds, api_calls, "
+            "topics_created, topics_updated, episodes_pruned) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (metric_id, run_id, _now(), clusters_succeeded, clusters_failed,
+             avg_confidence, episodes_processed, duration_seconds, api_calls,
+             topics_created, topics_updated, episodes_pruned),
+        )
+    return metric_id
+
+
+def get_consolidation_metrics(limit: int = 20) -> list[dict[str, Any]]:
+    """Retrieve recent consolidation metrics, newest first."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM consolidation_metrics ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
