@@ -192,7 +192,8 @@ class TestForget:
 class TestStatus:
     def test_status_basic(self, client):
         result = client.status()
-        assert result.version == "0.3.0"
+        from consolidation_memory import __version__
+        assert result.version == __version__
         assert "status" in result.health
         assert isinstance(result.consolidation_quality, dict)
 

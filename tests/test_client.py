@@ -192,7 +192,8 @@ class TestClientStatus:
         status = client.status()
         assert status.episodic_buffer["total"] == 1
         assert status.faiss_index_size == 1
-        assert status.version == "0.3.0"
+        from consolidation_memory import __version__
+        assert status.version == __version__
         assert status.embedding_backend != ""
 
         client.close()

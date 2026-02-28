@@ -1,6 +1,8 @@
 """Consolidation Memory — persistent semantic memory for AI conversations."""
 
-__version__ = "0.3.0"
+from importlib.metadata import version as _pkg_version
+
+__version__ = _pkg_version("consolidation-memory")
 
 # Lazy imports to avoid pulling in heavy deps (faiss, numpy) on bare import.
 _LAZY_IMPORTS = {
