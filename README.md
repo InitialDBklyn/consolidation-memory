@@ -2,9 +2,13 @@
 
 # consolidation-memory
 
-**Your AI forgets everything between sessions. This fixes that.**
+**Memory that gets smarter while your agent sleeps.**
 
-A local-first memory system that stores, retrieves, and *consolidates* knowledge across conversations — automatically.
+Most AI memory systems are glorified vector stores — they embed, they retrieve, they forget. consolidation-memory does something different: it runs a background process that clusters your raw episodes, synthesizes them through an LLM, and distills structured knowledge records — automatically, without agent intervention. Your memories don't just accumulate. They consolidate.
+
+This is the same trick your brain uses. Neuroscience calls it memory consolidation: during sleep, the hippocampus replays recent experiences and transfers distilled patterns to the neocortex for long-term storage. Raw episodes become durable knowledge. consolidation-memory applies this process to AI agents — a background thread replays stored episodes, clusters them by semantic similarity, and uses an LLM to synthesize structured knowledge records (facts, solutions, preferences) that feed back into future recall.
+
+The result: an agent that remembers not just *what* happened, but *what it learned*.
 
 [![PyPI](https://img.shields.io/pypi/v/consolidation-memory?style=flat-square&color=1a1a2e&labelColor=0f0f1a)](https://pypi.org/project/consolidation-memory/)
 [![CI](https://img.shields.io/github/actions/workflow/status/charliee1w/consolidation-memory/test.yml?style=flat-square&label=tests&color=1a1a2e&labelColor=0f0f1a)](https://github.com/charliee1w/consolidation-memory/actions)
@@ -21,6 +25,44 @@ AI:  (recalls your project uses CMake + MSVC on Windows)
       check if your vcpkg.json changed since we fixed it?"
 ```
 
+This isn't retrieval. The agent never explicitly stored "this user's linker errors come from vcpkg." That knowledge was *synthesized* during consolidation from scattered episodes across multiple sessions.
+
+## Why Consolidation Matters
+
+Vector search finds what you stored. Consolidation finds what you *learned*.
+
+| | Vector store | consolidation-memory |
+|---|---|---|
+| **Store** | Embed text, save vector | Same |
+| **Recall** | Nearest-neighbor search | Semantic search + knowledge records |
+| **Over time** | Index grows, recall degrades | Background LLM distills knowledge, prunes noise |
+| **Knowledge** | Whatever you explicitly saved | Emergent — synthesized from episode clusters |
+| **Maintenance** | Manual curation or nothing | Automatic background consolidation |
+
+Without consolidation, your memory system is a write-once archive. With it, memory compounds.
+
+## Why Not X?
+
+There are good AI memory tools out there. Here's why consolidation-memory exists anyway.
+
+| | consolidation-memory | Mem0 | Zep | Letta (MemGPT) | Cognee |
+|---|---|---|---|---|---|
+| **Core mechanism** | Background LLM consolidation — clusters episodes, synthesizes knowledge records automatically | Write-time extraction — LLM extracts facts on every `add()` call | Session summaries — compresses conversation windows into summaries | Agent self-management — the LLM decides what to store in its own context | ETL pipeline — extracts, chunks, builds knowledge graph |
+| **When synthesis happens** | Background thread (async, off the hot path) | Synchronously at write time | End of session / window | During agent turns (uses agent compute) | Explicit pipeline run |
+| **Knowledge structure** | Typed records (fact, solution, preference) from episode clusters | Flat extracted facts | Session summary nodes + temporal graph | Agent-managed text blocks | Knowledge graph (nodes + edges) |
+| **Infrastructure** | SQLite + FAISS (two files) | Qdrant/Postgres + graph DB (self-hosted) or cloud API | Postgres + Neo4j (cloud) or Graphiti (Apache 2.0) | Postgres + agent runtime | Neo4j or Kuzu + vector DB |
+| **Local-first** | Yes — runs on a laptop with no network | Partial — OSS needs Qdrant | No — cloud-first, OSS community edition deprecated | Yes — but requires running agent server | Partial — needs graph DB |
+| **MCP native** | Yes | Yes (added later) | No | No | Yes (added later) |
+| **Zero config** | `pip install` + `init` | Docker compose or API key | API key + cloud setup | `pip install` + server setup | `pip install` + graph DB |
+
+**Mem0** extracts facts at write time — every `add()` call invokes the LLM to parse and store structured facts. This works, but it means your extraction quality is bounded by what the LLM can infer from a single episode in isolation. consolidation-memory's background consolidation sees *clusters* of related episodes together, letting it synthesize cross-session patterns that no single episode contains.
+
+**Zep** summarizes conversation sessions and builds a temporal knowledge graph. It's designed for chat applications with clear session boundaries. consolidation-memory operates on individual episodes from any source — it doesn't assume a chat-session structure, and its consolidation clusters by semantic similarity rather than temporal adjacency.
+
+**Letta (MemGPT)** makes the agent itself responsible for memory management — the LLM decides what to write to its core memory and archival storage during its own turns. This is elegant but uses agent compute for memory housekeeping and requires the agent to be well-prompted for self-management. consolidation-memory moves this work to a background thread that runs independently of agent sessions.
+
+**Cognee** builds knowledge graphs through an ETL-style pipeline — powerful for structured reasoning over entities and relationships, but it needs graph database infrastructure (Neo4j or Kuzu). consolidation-memory's approach is deliberately simpler: SQLite + FAISS, two files, runs on a laptop.
+
 ## How It Works
 
 ```mermaid
@@ -36,6 +78,22 @@ flowchart LR
 1. **Store** — Save episodes (facts, solutions, preferences) with embeddings into SQLite + FAISS
 2. **Recall** — Semantic search with priority scoring (surprise, recency, access frequency)
 3. **Consolidate** — Background LLM clusters related episodes and synthesizes structured knowledge records
+
+### Consolidation Detail
+
+```mermaid
+flowchart TD
+    A["Fetch unconsolidated episodes"] --> B["Embed + cluster"]
+    B --> C{"Match existing topic?"}
+    C -->|Yes| D["Merge into topic"]
+    C -->|No| E["Create new topic"]
+    D --> F["LLM synthesizes structured records"]
+    E --> F
+    F --> G["Validate + version + write"]
+    G --> H["Prune old episodes"]
+```
+
+Runs on a background thread (default: every 6 hours). Episodes are grouped by hierarchical clustering, matched to existing knowledge topics by semantic similarity, then synthesized into structured records (facts, solutions, preferences) via LLM. Three consecutive failures trigger a circuit breaker to avoid burning through timeouts.
 
 ## Quick Start
 
@@ -134,22 +192,6 @@ consolidation-memory serve --rest --port 8080
 | `POST` | `/memory/export` | Export to JSON |
 
 </details>
-
-## How Consolidation Works
-
-```mermaid
-flowchart TD
-    A["Fetch unconsolidated episodes"] --> B["Embed + cluster"]
-    B --> C{"Match existing topic?"}
-    C -->|Yes| D["Merge into topic"]
-    C -->|No| E["Create new topic"]
-    D --> F["LLM synthesizes structured records"]
-    E --> F
-    F --> G["Validate + version + write"]
-    G --> H["Prune old episodes"]
-```
-
-Runs on a background thread (default: every 6 hours). Episodes are grouped by hierarchical clustering, matched to existing knowledge topics by semantic similarity, then synthesized into structured records (facts, solutions, preferences) via LLM. Three consecutive failures trigger a circuit breaker to avoid burning through timeouts.
 
 ## Backends
 
