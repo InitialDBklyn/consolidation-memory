@@ -217,7 +217,7 @@ class TestContradictionDetection:
         new_vec /= np.linalg.norm(new_vec)
         existing_vec = -new_vec  # Opposite direction = very dissimilar
 
-        with patch("consolidation_memory.consolidation.encode_documents") as mock_encode:
+        with patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode:
             mock_encode.side_effect = [new_vec, existing_vec]
 
             result = _detect_contradictions(
@@ -236,8 +236,8 @@ class TestContradictionDetection:
         vec = np.random.randn(1, dim).astype(np.float32)
         vec /= np.linalg.norm(vec)
 
-        with patch("consolidation_memory.consolidation.encode_documents") as mock_encode, \
-             patch("consolidation_memory.consolidation._call_llm") as mock_llm:
+        with patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode, \
+             patch("consolidation_memory.consolidation.engine._call_llm") as mock_llm:
             mock_encode.side_effect = [vec, vec]  # Same vector = similarity ~1.0
             mock_llm.return_value = '["CONTRADICTS"]'
 
@@ -259,8 +259,8 @@ class TestContradictionDetection:
         vec = np.random.randn(1, dim).astype(np.float32)
         vec /= np.linalg.norm(vec)
 
-        with patch("consolidation_memory.consolidation.encode_documents") as mock_encode, \
-             patch("consolidation_memory.consolidation._call_llm") as mock_llm:
+        with patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode, \
+             patch("consolidation_memory.consolidation.engine._call_llm") as mock_llm:
             mock_encode.side_effect = [vec, vec]
             mock_llm.return_value = '["COMPATIBLE"]'
 
@@ -281,8 +281,8 @@ class TestContradictionDetection:
         vec = np.random.randn(1, dim).astype(np.float32)
         vec /= np.linalg.norm(vec)
 
-        with patch("consolidation_memory.consolidation.encode_documents") as mock_encode, \
-             patch("consolidation_memory.consolidation.CONTRADICTION_LLM_ENABLED", False):
+        with patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode, \
+             patch("consolidation_memory.consolidation.engine.CONTRADICTION_LLM_ENABLED", False):
             mock_encode.side_effect = [vec, vec]
 
             result = _detect_contradictions(
@@ -302,8 +302,8 @@ class TestContradictionDetection:
         vec = np.random.randn(1, dim).astype(np.float32)
         vec /= np.linalg.norm(vec)
 
-        with patch("consolidation_memory.consolidation.encode_documents") as mock_encode, \
-             patch("consolidation_memory.consolidation._call_llm") as mock_llm:
+        with patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode, \
+             patch("consolidation_memory.consolidation.engine._call_llm") as mock_llm:
             mock_encode.side_effect = [vec, vec]
             mock_llm.side_effect = RuntimeError("LLM down")
 
@@ -320,7 +320,7 @@ class TestContradictionDetection:
         """Embedding failures should gracefully return no contradictions."""
         from consolidation_memory.consolidation import _detect_contradictions
 
-        with patch("consolidation_memory.consolidation.encode_documents") as mock_encode:
+        with patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode:
             mock_encode.side_effect = RuntimeError("Backend down")
 
             result = _detect_contradictions(

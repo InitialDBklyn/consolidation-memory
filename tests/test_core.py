@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
+import faiss
 import numpy as np
 import pytest
 
@@ -341,6 +342,234 @@ class TestReloadSignal:
         assert not FAISS_RELOAD_SIGNAL.exists()
         VectorStore.signal_reload()
         assert FAISS_RELOAD_SIGNAL.exists()
+
+
+# ── IVF migration tests ─────────────────────────────────────────────────────
+
+class TestIVFMigration:
+    """Tests for automatic IndexFlatIP → IndexIVFFlat migration."""
+
+    def test_no_upgrade_below_threshold(self):
+        """Migration should not trigger when vector count is below threshold."""
+        from consolidation_memory.vector_store import VectorStore
+        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+            vs = VectorStore()
+            vecs = _make_normalized_batch(50, seed=42)
+            ids = [f"ep-{i}" for i in range(50)]
+            vs.add_batch(ids, vecs)
+            assert isinstance(vs._index, faiss.IndexFlatIP)
+            assert vs.size == 50
+
+    def test_upgrade_triggers_at_threshold(self):
+        """Migration should trigger when vector count reaches threshold."""
+        from consolidation_memory.vector_store import VectorStore
+        threshold = 100
+        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", threshold):
+            vs = VectorStore()
+            vecs = _make_normalized_batch(threshold, seed=42)
+            ids = [f"ep-{i}" for i in range(threshold)]
+            vs.add_batch(ids, vecs)
+            assert isinstance(vs._index, faiss.IndexIVFFlat)
+            assert vs._index.ntotal == threshold
+
+    def test_all_vectors_preserved_after_upgrade(self):
+        """Round-trip: all vectors should be reconstructable after migration."""
+        from consolidation_memory.vector_store import VectorStore
+        n = 120
+        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+            vs = VectorStore()
+            vecs = _make_normalized_batch(n, seed=42)
+            ids = [f"ep-{i}" for i in range(n)]
+            vs.add_batch(ids, vecs)
+
+            assert isinstance(vs._index, faiss.IndexIVFFlat)
+
+            # Verify all vectors can be reconstructed
+            result = vs.reconstruct_batch(ids)
+            assert result is not None
+            found_ids, found_vecs = result
+            assert set(found_ids) == set(ids)
+            assert found_vecs.shape == (n, 384)
+
+            # Verify vectors are close to originals (IVF may have minor
+            # floating-point differences due to the flat inner product, but
+            # since IndexIVFFlat stores vectors exactly, they should match)
+            for i, uid in enumerate(ids):
+                idx_in_found = found_ids.index(uid)
+                np.testing.assert_allclose(
+                    found_vecs[idx_in_found], vecs[i], atol=1e-5,
+                )
+
+    def test_search_results_equivalent_after_upgrade(self):
+        """Search results should be equivalent before and after migration."""
+        from consolidation_memory.vector_store import VectorStore
+        n = 150
+        query = _make_normalized_vec(seed=99)
+        vecs = _make_normalized_batch(n, seed=42)
+        ids = [f"ep-{i}" for i in range(n)]
+
+        # Build flat index below threshold and capture search results
+        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 999_999):
+            vs = VectorStore()
+            vs.add_batch(ids, vecs)
+            assert isinstance(vs._index, faiss.IndexFlatIP)
+            flat_results = vs.search(query, k=10)
+            flat_ids = [r[0] for r in flat_results]
+
+            # Now trigger upgrade on the same store
+            with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+                with vs._lock:
+                    upgraded = vs._maybe_upgrade_index()
+                assert upgraded is True
+                assert isinstance(vs._index, faiss.IndexIVFFlat)
+
+                # Use high nprobe for accurate comparison
+                vs._index.nprobe = vs._index.nlist
+                ivf_results = vs.search(query, k=10)
+                ivf_ids = [r[0] for r in ivf_results]
+
+                # With nprobe=nlist, IVF should return same results as flat
+                assert flat_ids == ivf_ids
+
+                # Scores should be very close
+                for (_, flat_score), (_, ivf_score) in zip(flat_results, ivf_results):
+                    assert abs(flat_score - ivf_score) < 1e-4
+
+    def test_upgrade_fallback_on_failure(self):
+        """If IVF training fails, should keep IndexFlatIP and log warning."""
+        from consolidation_memory.vector_store import VectorStore
+        n = 100
+        with (
+            patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100),
+            patch("faiss.IndexIVFFlat", side_effect=RuntimeError("training failed")),
+        ):
+            vs = VectorStore()
+            vecs = _make_normalized_batch(n, seed=42)
+            ids = [f"ep-{i}" for i in range(n)]
+            vs.add_batch(ids, vecs)
+
+            # Should still be IndexFlatIP after failed upgrade
+            assert isinstance(vs._index, faiss.IndexFlatIP)
+            assert vs.size == n
+            # Search should still work
+            results = vs.search(vecs[0], k=1)
+            assert results[0][0] == "ep-0"
+
+    def test_upgrade_persists_to_disk(self):
+        """After migration, reloading from disk should load the IVF index."""
+        from consolidation_memory.vector_store import VectorStore
+        n = 100
+        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+            vs1 = VectorStore()
+            vecs = _make_normalized_batch(n, seed=42)
+            ids = [f"ep-{i}" for i in range(n)]
+            vs1.add_batch(ids, vecs)
+            assert isinstance(vs1._index, faiss.IndexIVFFlat)
+
+        # Reload from disk — no threshold patch needed since we're just loading
+        vs2 = VectorStore()
+        assert isinstance(vs2._index, faiss.IndexIVFFlat)
+        assert vs2._index.ntotal == n
+        assert vs2.size == n
+
+        # Search should work on the reloaded index
+        query = _make_normalized_vec(seed=99)
+        results = vs2.search(query, k=5)
+        assert len(results) == 5
+
+    def test_upgrade_with_tombstones(self):
+        """Migration should preserve tombstones and effective size."""
+        from consolidation_memory.vector_store import VectorStore
+        n = 120
+        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+            vs = VectorStore()
+            vecs = _make_normalized_batch(n, seed=42)
+            ids = [f"ep-{i}" for i in range(n)]
+            vs.add_batch(ids, vecs)
+
+            # Tombstone some vectors
+            vs.remove_batch(["ep-0", "ep-1", "ep-2"])
+
+            assert isinstance(vs._index, faiss.IndexIVFFlat)
+            assert vs._index.ntotal == n
+            assert vs.size == n - 3
+            assert vs.tombstone_count == 3
+
+            # Tombstoned vectors should not appear in search
+            results = vs.search(vecs[0], k=10)
+            found_ids = [r[0] for r in results]
+            assert "ep-0" not in found_ids
+
+    def test_compact_after_upgrade(self):
+        """Compaction on an IVF index rebuilds as flat, then re-upgrades if still above threshold."""
+        from consolidation_memory.vector_store import VectorStore
+        n = 120
+        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+            vs = VectorStore()
+            vecs = _make_normalized_batch(n, seed=42)
+            ids = [f"ep-{i}" for i in range(n)]
+            vs.add_batch(ids, vecs)
+            assert isinstance(vs._index, faiss.IndexIVFFlat)
+
+            # Tombstone 10 vectors and compact
+            vs.remove_batch([f"ep-{i}" for i in range(10)])
+            removed = vs.compact()
+            assert removed == 10
+
+            # After compact, should re-upgrade since 110 > 100
+            assert isinstance(vs._index, faiss.IndexIVFFlat)
+            assert vs._index.ntotal == n - 10
+            assert vs.size == n - 10
+
+    def test_compact_below_threshold_stays_flat(self):
+        """Compaction that brings count below threshold should stay flat."""
+        from consolidation_memory.vector_store import VectorStore
+        n = 110
+        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+            vs = VectorStore()
+            vecs = _make_normalized_batch(n, seed=42)
+            ids = [f"ep-{i}" for i in range(n)]
+            vs.add_batch(ids, vecs)
+            assert isinstance(vs._index, faiss.IndexIVFFlat)
+
+            # Tombstone enough to drop below threshold
+            vs.remove_batch([f"ep-{i}" for i in range(20)])
+            removed = vs.compact()
+            assert removed == 20
+
+            # 90 vectors < 100 threshold, should remain flat
+            assert isinstance(vs._index, faiss.IndexFlatIP)
+            assert vs.size == 90
+
+    def test_single_add_triggers_upgrade(self):
+        """Single add() that crosses threshold should trigger upgrade."""
+        from consolidation_memory.vector_store import VectorStore
+        n = 99
+        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+            vs = VectorStore()
+            vecs = _make_normalized_batch(n, seed=42)
+            ids = [f"ep-{i}" for i in range(n)]
+            vs.add_batch(ids, vecs)
+            assert isinstance(vs._index, faiss.IndexFlatIP)
+
+            # One more vector should trigger upgrade
+            extra_vec = _make_normalized_vec(seed=999)
+            vs.add("ep-final", extra_vec)
+            assert isinstance(vs._index, faiss.IndexIVFFlat)
+            assert vs._index.ntotal == 100
+
+    def test_nlist_and_nprobe_reasonable(self):
+        """nlist and nprobe should be set to reasonable values."""
+        from consolidation_memory.vector_store import VectorStore
+        n = 400  # sqrt(400) = 20
+        with patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 100):
+            vs = VectorStore()
+            vecs = _make_normalized_batch(n, seed=42)
+            ids = [f"ep-{i}" for i in range(n)]
+            vs.add_batch(ids, vecs)
+            assert isinstance(vs._index, faiss.IndexIVFFlat)
+            assert vs._index.nlist == 20  # sqrt(400)
+            assert vs._index.nprobe == 5  # 20 // 4
 
 
 # ── Knowledge versioning tests ───────────────────────────────────────────────

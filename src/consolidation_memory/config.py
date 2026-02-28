@@ -131,6 +131,7 @@ FAISS_COMPACTION_THRESHOLD = 0.2
 # ── FAISS tuning ─────────────────────────────────────────────────────────
 _faiss = _cfg.get("faiss", {})
 FAISS_SEARCH_FETCH_K_PADDING = int(_faiss.get("search_fetch_k_padding", 0))  # 0 = auto (tombstone count)
+FAISS_IVF_UPGRADE_THRESHOLD = int(_faiss.get("ivf_upgrade_threshold", 10_000))
 
 # ── LLM API (consolidation summarization) ────────────────────────────────────
 _llm = _cfg.get("llm", {})

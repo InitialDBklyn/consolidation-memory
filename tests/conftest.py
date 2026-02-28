@@ -48,7 +48,7 @@ def tmp_data_dir(tmp_path):
         patch("consolidation_memory.config.EMBEDDING_BACKEND", "fastembed"),
         # Patch modules that still import non-path constants at module level
         patch("consolidation_memory.vector_store.EMBEDDING_DIMENSION", test_dim),
-        patch("consolidation_memory.consolidation.CONSOLIDATION_PRUNE_ENABLED", False),
+        patch("consolidation_memory.consolidation.engine.CONSOLIDATION_PRUNE_ENABLED", False),
         # context_assembler module-level imports
         patch("consolidation_memory.context_assembler.RECENCY_HALF_LIFE_DAYS", 90.0),
         patch("consolidation_memory.context_assembler.KNOWLEDGE_SEMANTIC_WEIGHT", 0.8),
@@ -59,22 +59,23 @@ def tmp_data_dir(tmp_path):
         patch("consolidation_memory.context_assembler.RECORDS_KEYWORD_WEIGHT", 0.1),
         patch("consolidation_memory.context_assembler.RECORDS_RELEVANCE_THRESHOLD", 0.3),
         patch("consolidation_memory.context_assembler.RECORDS_MAX_RESULTS", 15),
-        # consolidation module-level imports
-        patch("consolidation_memory.consolidation.CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD", 0.75),
-        patch("consolidation_memory.consolidation.CONSOLIDATION_CONFIDENCE_COHERENCE_W", 0.6),
-        patch("consolidation_memory.consolidation.CONSOLIDATION_CONFIDENCE_SURPRISE_W", 0.4),
+        # consolidation submodule-level imports (split from monolithic consolidation.py)
+        patch("consolidation_memory.consolidation.clustering.CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD", 0.75),
+        patch("consolidation_memory.consolidation.clustering.CONSOLIDATION_CONFIDENCE_COHERENCE_W", 0.6),
+        patch("consolidation_memory.consolidation.clustering.CONSOLIDATION_CONFIDENCE_SURPRISE_W", 0.4),
         patch(
-            "consolidation_memory.consolidation.CONSOLIDATION_STOPWORDS",
+            "consolidation_memory.consolidation.clustering.CONSOLIDATION_STOPWORDS",
             frozenset({"the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "with", "is", "at", "it"}),
         ),
-        patch("consolidation_memory.consolidation.CONTRADICTION_SIMILARITY_THRESHOLD", 0.7),
-        patch("consolidation_memory.consolidation.CONTRADICTION_LLM_ENABLED", True),
-        patch("consolidation_memory.consolidation.RENDER_MARKDOWN", True),
-        patch("consolidation_memory.consolidation.CONSOLIDATION_MAX_DURATION", 1800),
-        patch("consolidation_memory.consolidation.CONSOLIDATION_MAX_ATTEMPTS", 5),
-        patch("consolidation_memory.consolidation.LLM_CALL_TIMEOUT", 120),
+        patch("consolidation_memory.consolidation.engine.CONTRADICTION_SIMILARITY_THRESHOLD", 0.7),
+        patch("consolidation_memory.consolidation.engine.CONTRADICTION_LLM_ENABLED", True),
+        patch("consolidation_memory.consolidation.engine.RENDER_MARKDOWN", True),
+        patch("consolidation_memory.consolidation.engine.CONSOLIDATION_MAX_DURATION", 1800),
+        patch("consolidation_memory.consolidation.engine.CONSOLIDATION_MAX_ATTEMPTS", 5),
+        patch("consolidation_memory.consolidation.prompting.LLM_CALL_TIMEOUT", 120),
         # vector_store module-level imports
         patch("consolidation_memory.vector_store.FAISS_SEARCH_FETCH_K_PADDING", 0),
+        patch("consolidation_memory.vector_store.FAISS_IVF_UPGRADE_THRESHOLD", 10_000),
     ]
 
     for p in patches:

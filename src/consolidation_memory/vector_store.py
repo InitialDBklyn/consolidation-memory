@@ -25,6 +25,7 @@ import numpy as np
 from consolidation_memory import config as _config
 from consolidation_memory.config import (
     EMBEDDING_DIMENSION,
+    FAISS_IVF_UPGRADE_THRESHOLD,
     FAISS_SEARCH_FETCH_K_PADDING,
     FAISS_SIZE_WARNING_THRESHOLD,
 )
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 class VectorStore:
     def __init__(self):
         self._lock = threading.Lock()
-        self._index: faiss.IndexFlatIP | None = None
+        self._index: faiss.Index | None = None
         self._id_map: list[str] = []
         self._uuid_to_pos: dict[str, int] = {}
         self._tombstones: set[str] = set()
@@ -64,10 +65,13 @@ class VectorStore:
                 self._save_tombstones()
             else:
                 logger.info("Loaded %d vectors", self._index.ntotal)
-                if self._index.ntotal >= FAISS_SIZE_WARNING_THRESHOLD:
+                if (
+                    isinstance(self._index, faiss.IndexFlatIP)
+                    and self._index.ntotal >= FAISS_SIZE_WARNING_THRESHOLD
+                ):
                     logger.warning(
                         "FAISS index has %d vectors (threshold: %d). "
-                        "Consider migrating from IndexFlatIP to IndexIVFFlat.",
+                        "Auto-upgrade to IndexIVFFlat will trigger on next add.",
                         self._index.ntotal, FAISS_SIZE_WARNING_THRESHOLD,
                     )
 
@@ -139,6 +143,69 @@ class VectorStore:
             raise
         os.replace(tmp, str(_config.FAISS_TOMBSTONE_PATH))
 
+    # ── Index upgrade ────────────────────────────────────────────────────────
+
+    def _maybe_upgrade_index(self) -> bool:
+        """Upgrade from IndexFlatIP to IndexIVFFlat when index exceeds threshold.
+
+        Must be called with ``self._lock`` held. Extracts all vectors from the
+        current flat index, trains an IVF index, adds the vectors, enables
+        direct map for reconstruct support, and atomically saves to disk.
+
+        Returns True if upgrade was performed, False otherwise.
+        If training fails, keeps the existing IndexFlatIP and logs a warning.
+        """
+        if not isinstance(self._index, faiss.IndexFlatIP):
+            return False
+        if self._index.ntotal < FAISS_IVF_UPGRADE_THRESHOLD:
+            return False
+
+        n = self._index.ntotal
+        dim = self._index.d
+        nlist = max(1, min(int(n ** 0.5), 4096))
+
+        logger.info(
+            "Upgrading FAISS index from IndexFlatIP to IndexIVFFlat "
+            "(n=%d, nlist=%d, dim=%d)",
+            n, nlist, dim,
+        )
+
+        try:
+            # Extract all vectors from the flat index
+            vectors = np.zeros((n, dim), dtype=np.float32)
+            for i in range(n):
+                vectors[i] = self._index.reconstruct(i)
+
+            # Create and train IVF index
+            quantizer = faiss.IndexFlatIP(dim)
+            ivf_index = faiss.IndexIVFFlat(
+                quantizer, dim, nlist, faiss.METRIC_INNER_PRODUCT,
+            )
+            ivf_index.train(vectors)
+            ivf_index.add(vectors)
+
+            # Enable reconstruct support and set search quality
+            ivf_index.make_direct_map()
+            ivf_index.nprobe = max(1, min(nlist // 4, 64))
+
+            # Atomic swap
+            self._index = ivf_index
+            self._save()
+
+            logger.info(
+                "FAISS index upgrade complete: IndexIVFFlat with "
+                "nlist=%d, nprobe=%d",
+                nlist, ivf_index.nprobe,
+            )
+            return True
+
+        except Exception:
+            logger.warning(
+                "FAISS index upgrade to IndexIVFFlat failed, keeping IndexFlatIP",
+                exc_info=True,
+            )
+            return False
+
     # ── Concurrency ──────────────────────────────────────────────────────────
 
     def reload_if_stale(self) -> bool:
@@ -179,6 +246,7 @@ class VectorStore:
             self._id_map.append(episode_id)
             self._uuid_to_pos[episode_id] = len(self._id_map) - 1
             self._save()
+            self._maybe_upgrade_index()
 
     def add_batch(self, episode_ids: list[str], embeddings: np.ndarray) -> None:
         """Add multiple vectors with UUIDs. More efficient than repeated add() calls."""
@@ -190,6 +258,7 @@ class VectorStore:
             for i, uid in enumerate(episode_ids):
                 self._uuid_to_pos[uid] = start + i
             self._save()
+            self._maybe_upgrade_index()
 
     # ── Search ───────────────────────────────────────────────────────────────
 
@@ -303,6 +372,7 @@ class VectorStore:
             self._save()
             self._save_tombstones()
             logger.info("Compacted FAISS index: removed %d tombstoned vectors", removed)
+            self._maybe_upgrade_index()
             return removed
 
     @property
