@@ -6,7 +6,8 @@ on:
       - "v*"
 
 permissions:
-  id-token: write  # Required for trusted publishing (OIDC)
+  contents: write   # Required for creating GitHub Releases
+  id-token: write   # Required for trusted publishing (OIDC)
 
 jobs:
   build:
@@ -43,3 +44,24 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Extract the section for this version from CHANGELOG.md
+          NOTES=$(awk "/^## ${VERSION} /{found=1; next} /^## [0-9]/{if(found) exit} found{print}" CHANGELOG.md)
+          # Write to file to preserve newlines
+          echo "$NOTES" > /tmp/release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/release_notes.md
+          generate_release_notes: false
