@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.0 — 2026-02-28
+
+### Features
+
+- **TUI dashboard** — `consolidation-memory dashboard` launches an interactive terminal UI (powered by Textual) with 4 tabs:
+  - **Episodes browser** — sortable table showing content preview, type, tags, surprise score, creation time, and consolidation status
+  - **Knowledge topics** — topic list with record detail panel; select a topic to view its extracted facts, solutions, and preferences
+  - **Consolidation history** — table of all consolidation runs with timestamps, episodes processed, clusters formed, topics created/updated, and status
+  - **Memory stats** — live-refreshing display of episode counts by type, FAISS index size, tombstone count, DB size, and last consolidation time
+- **Keybindings**: `q` quit, `r` refresh, `1-4` switch tabs
+- **Lightweight data layer** — dashboard queries SQLite directly without initializing FAISS or embedding backends, keeping startup instant
+
+### Dependencies
+
+- New optional extra: `pip install consolidation-memory[dashboard]` (adds `textual>=1.0.0`)
+- `all` extra now includes `dashboard`
+
+### Internal
+
+- New `DashboardData` class in `dashboard_data.py` — read-only SQLite queries with content truncation, tag parsing, FAISS sidecar file reading
+- 23 new tests (237 total) covering all data-fetching methods
+
 ## 0.6.0 — 2026-02-28
 
 ### Features
