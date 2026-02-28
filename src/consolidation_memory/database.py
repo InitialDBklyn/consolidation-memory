@@ -22,7 +22,7 @@ _conn_list_lock = threading.Lock()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 # Future migrations go here: version -> list of SQL statements
 MIGRATIONS: dict[int, list[str]] = {
@@ -46,6 +46,9 @@ MIGRATIONS: dict[int, list[str]] = {
             episodes_pruned     INTEGER NOT NULL DEFAULT 0
         )""",
         "CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON consolidation_metrics(timestamp)",
+    ],
+    4: [
+        "CREATE INDEX IF NOT EXISTS idx_episodes_consolidation_attempts ON episodes(consolidation_attempts)",
     ],
 }
 
@@ -533,6 +536,53 @@ def increment_consolidation_attempts(episode_ids: list[str]) -> None:
             f"last_consolidation_attempt = ? WHERE id IN ({placeholders})",
             [now] + episode_ids,
         )
+
+
+def reset_stale_consolidation_attempts(max_attempts: int = 5, stale_hours: int = 24) -> int:
+    """Reset consolidation_attempts for episodes stuck at max that haven't been
+    retried recently. This allows episodes to be reconsolidated after the LLM
+    backend recovers from an outage.
+
+    Returns:
+        Number of episodes reset.
+    """
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=stale_hours)).isoformat()
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """UPDATE episodes SET consolidation_attempts = 0, last_consolidation_attempt = NULL
+               WHERE consolidation_attempts >= ? AND deleted = 0 AND consolidated = 0
+               AND (last_consolidation_attempt IS NULL OR last_consolidation_attempt < ?)""",
+            (max_attempts, cutoff),
+        )
+    return cursor.rowcount
+
+
+def get_median_access_count() -> float:
+    """Compute the median access_count across all active episodes using SQL."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT access_count FROM episodes
+               WHERE deleted = 0 AND consolidated != 2
+               ORDER BY access_count
+               LIMIT 1 OFFSET (
+                   SELECT COUNT(*) / 2 FROM episodes
+                   WHERE deleted = 0 AND consolidated != 2
+               )"""
+        ).fetchone()
+    return float(row["access_count"]) if row else 0.0
+
+
+def get_active_episodes_paginated(offset: int = 0, limit: int = 1000) -> list[dict[str, Any]]:
+    """Return a page of non-deleted, non-pruned episodes for surprise adjustment."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT id, surprise_score, access_count, created_at, updated_at, consolidated
+               FROM episodes WHERE deleted = 0 AND consolidated != 2
+               ORDER BY id LIMIT ? OFFSET ?""",
+            (limit, offset),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def insert_consolidation_metrics(

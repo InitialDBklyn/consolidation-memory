@@ -73,6 +73,10 @@ class MemoryClient:
         self._consolidation_stop = threading.Event()
         self._consolidation_thread: threading.Thread | None = None
 
+        # Cached backend probe result: (is_reachable, timestamp)
+        self._probe_cache: tuple[bool, float] | None = None
+        self._probe_cache_ttl = 30.0  # seconds
+
         if auto_consolidate and CONSOLIDATION_AUTO_RUN:
             self._start_consolidation_thread()
 
@@ -137,24 +141,25 @@ class MemoryClient:
                 message=f"Embedding backend unreachable: {e}",
             )
 
-        # Dedup check
+        # Dedup check: search top-3 so tombstone-filtered results don't mask real duplicates
         if DEDUP_ENABLED and self._vector_store.size > 0:
-            matches = self._vector_store.search(embedding[0], k=1)
-            if matches:
-                best_id, best_sim = matches[0]
-                if best_sim >= DEDUP_SIMILARITY_THRESHOLD:
-                    existing = get_episode(best_id)
+            matches = self._vector_store.search(embedding[0], k=3)
+            for match_id, match_sim in matches:
+                if match_sim >= DEDUP_SIMILARITY_THRESHOLD:
+                    existing = get_episode(match_id)
                     if existing is not None:
                         logger.info(
                             "Duplicate detected (sim=%.4f >= %.2f): existing=%s",
-                            best_sim, DEDUP_SIMILARITY_THRESHOLD, best_id,
+                            match_sim, DEDUP_SIMILARITY_THRESHOLD, match_id,
                         )
                         return StoreResult(
                             status="duplicate_detected",
-                            existing_id=best_id,
-                            similarity=round(best_sim, 4),
+                            existing_id=match_id,
+                            similarity=round(match_sim, 4),
                             message="Content too similar to existing episode. Not stored.",
                         )
+                else:
+                    break  # Results are sorted by similarity; no point checking lower ones
 
         # Validate content_type
         valid_types = {ct.value for ct in ContentType}
@@ -247,21 +252,26 @@ class MemoryClient:
         for i, item in enumerate(items):
             emb = embeddings[i]
 
-            # Dedup check
+            # Dedup check: search top-3 so tombstone-filtered results don't mask real duplicates
             if DEDUP_ENABLED and self._vector_store.size > 0:
-                matches = self._vector_store.search(emb, k=1)
-                if matches:
-                    best_id, best_sim = matches[0]
-                    if best_sim >= DEDUP_SIMILARITY_THRESHOLD:
-                        existing = get_episode(best_id)
+                matches = self._vector_store.search(emb, k=3)
+                is_dup = False
+                for match_id, match_sim in matches:
+                    if match_sim >= DEDUP_SIMILARITY_THRESHOLD:
+                        existing = get_episode(match_id)
                         if existing is not None:
                             duplicates += 1
                             results.append({
                                 "status": "duplicate_detected",
-                                "existing_id": best_id,
-                                "similarity": round(float(best_sim), 4),
+                                "existing_id": match_id,
+                                "similarity": round(float(match_sim), 4),
                             })
-                            continue
+                            is_dup = True
+                            break
+                    else:
+                        break
+                if is_dup:
+                    continue
 
             episode_id = insert_episode(
                 content=item["content"],
@@ -732,11 +742,18 @@ class MemoryClient:
         }
 
     def _probe_backend(self) -> bool:
-        """Quick check if embedding backend is reachable. Returns True/False."""
+        """Quick check if embedding backend is reachable. Cached for 30s."""
+        import time
         from consolidation_memory.config import EMBEDDING_BACKEND, EMBEDDING_API_BASE
 
         if EMBEDDING_BACKEND == "fastembed":
             return True
+
+        # Return cached result if fresh
+        if self._probe_cache is not None:
+            cached_result, cached_at = self._probe_cache
+            if time.monotonic() - cached_at < self._probe_cache_ttl:
+                return cached_result
 
         from urllib.request import urlopen, Request
         from urllib.error import URLError
@@ -748,8 +765,10 @@ class MemoryClient:
             )
             with urlopen(req, timeout=3) as resp:
                 resp.read()
+            self._probe_cache = (True, time.monotonic())
             return True
         except (URLError, ConnectionError, TimeoutError, OSError):
+            self._probe_cache = (False, time.monotonic())
             return False
 
     def _check_embedding_backend(self) -> None:

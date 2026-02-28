@@ -217,6 +217,9 @@ class VectorStore:
             else:
                 auto_padding = min(len(self._tombstones), k * 3)
                 fetch_k = min(k + auto_padding, self._index.ntotal)
+            # Absolute cap: never fetch more than max(k*3, 200) to prevent
+            # pathological cases when callers request large k with filters.
+            fetch_k = min(fetch_k, max(k * 3, 200), self._index.ntotal)
             logger.debug(
                 "search: ntotal=%d, tombstones=%d, effective=%d, k=%d, fetch_k=%d",
                 self._index.ntotal, len(self._tombstones), effective_size, k, fetch_k,

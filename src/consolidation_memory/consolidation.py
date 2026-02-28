@@ -51,14 +51,16 @@ from consolidation_memory.circuit_breaker import CircuitBreaker
 from consolidation_memory.database import (
     complete_consolidation_run,
     ensure_schema,
-    get_all_active_episodes,
+    get_active_episodes_paginated,
     get_all_knowledge_topics,
+    get_median_access_count,
     get_prunable_episodes,
     get_unconsolidated_episodes,
     increment_consolidation_attempts,
     insert_consolidation_metrics,
     mark_consolidated,
     mark_pruned,
+    reset_stale_consolidation_attempts,
     start_consolidation_run,
     update_surprise_scores,
     upsert_knowledge_topic,
@@ -367,56 +369,70 @@ def _version_knowledge_file(filepath: Path) -> None:
 # ── Adaptive surprise scoring ───────────────────────────────────────────────
 
 def _adjust_surprise_scores() -> int:
-    episodes = get_all_active_episodes()
-    if not episodes:
-        return 0
-
-    access_counts = [ep["access_count"] for ep in episodes]
-    median_access = float(np.median(access_counts))
+    # Get median access count via single SQL query instead of loading all episodes
+    median_access = get_median_access_count()
 
     now = datetime.now(timezone.utc)
-    updates = []
+    total_updates = 0
+    total_processed = 0
+    page_size = 1000
+    offset = 0
 
-    for ep in episodes:
-        original = ep["surprise_score"]
-        new_score = original
-        access = ep["access_count"]
+    while True:
+        episodes = get_active_episodes_paginated(offset=offset, limit=page_size)
+        if not episodes:
+            break
 
-        if access > median_access and median_access > 0:
-            excess = access - median_access
-            boost = min(excess * SURPRISE_BOOST_PER_ACCESS, 0.15)
-            new_score += boost
+        total_processed += len(episodes)
+        updates = []
 
-        try:
-            last_update = datetime.fromisoformat(ep["updated_at"])
-            if last_update.tzinfo is None:
-                last_update = last_update.replace(tzinfo=timezone.utc)
-            days_inactive = (now - last_update).total_seconds() / 86400.0
-        except (ValueError, TypeError):
-            days_inactive = 0
+        for ep in episodes:
+            original = ep["surprise_score"]
+            new_score = original
+            access = ep["access_count"]
 
-        # Only decay episodes that have been consolidated (their knowledge is
-        # captured in a topic document).  Unconsolidated episodes are the sole
-        # record of their information and should never be decayed into
-        # obscurity.  This breaks the positive feedback loop where low-access
-        # episodes decay → rank lower → get accessed even less → decay more.
-        is_consolidated = ep.get("consolidated", 0) == 1
-        if access == 0 and days_inactive >= SURPRISE_DECAY_INACTIVE_DAYS and is_consolidated:
-            new_score -= SURPRISE_DECAY_RATE
+            if access > median_access and median_access > 0:
+                excess = access - median_access
+                boost = min(excess * SURPRISE_BOOST_PER_ACCESS, 0.15)
+                new_score += boost
 
-        new_score = max(SURPRISE_MIN, min(SURPRISE_MAX, new_score))
+            try:
+                last_update = datetime.fromisoformat(ep["updated_at"])
+                if last_update.tzinfo is None:
+                    last_update = last_update.replace(tzinfo=timezone.utc)
+                days_inactive = (now - last_update).total_seconds() / 86400.0
+            except (ValueError, TypeError):
+                days_inactive = 0
 
-        if abs(new_score - original) >= 0.005:
-            updates.append((round(new_score, 4), ep["id"]))
+            # Only decay episodes that have been consolidated (their knowledge is
+            # captured in a topic document).  Unconsolidated episodes are the sole
+            # record of their information and should never be decayed into
+            # obscurity.  This breaks the positive feedback loop where low-access
+            # episodes decay → rank lower → get accessed even less → decay more.
+            is_consolidated = ep.get("consolidated", 0) == 1
+            if access == 0 and days_inactive >= SURPRISE_DECAY_INACTIVE_DAYS and is_consolidated:
+                new_score -= SURPRISE_DECAY_RATE
 
-    if updates:
-        update_surprise_scores(updates)
+            new_score = max(SURPRISE_MIN, min(SURPRISE_MAX, new_score))
+
+            if abs(new_score - original) >= 0.005:
+                updates.append((round(new_score, 4), ep["id"]))
+
+        if updates:
+            update_surprise_scores(updates)
+            total_updates += len(updates)
+
+        if len(episodes) < page_size:
+            break
+        offset += page_size
+
+    if total_updates:
         logger.info(
             "Adjusted surprise scores for %d/%d episodes (median_access=%.1f)",
-            len(updates), len(episodes), median_access,
+            total_updates, total_processed, median_access,
         )
 
-    return len(updates)
+    return total_updates
 
 
 # ── Topic matching ───────────────────────────────────────────────────────────
@@ -552,9 +568,24 @@ NEW KNOWLEDGE TO MERGE:
 Output the complete merged document starting with --- frontmatter:"""
 
     merged_text, merge_calls = _llm_with_validation(merge_prompt, cluster_episodes)
+
+    # Validate merge output before writing — reject empty or structureless output
+    if not merged_text or not merged_text.strip():
+        logger.error("LLM merge returned empty output for %s; original preserved.", existing["filename"])
+        increment_consolidation_attempts(cluster_ep_ids)
+        return "failed", merge_calls
+    merged_parsed = _parse_frontmatter(merged_text)
+    if not merged_parsed["meta"].get("title"):
+        logger.error(
+            "LLM merge output missing frontmatter title for %s; original preserved.",
+            existing["filename"],
+        )
+        increment_consolidation_attempts(cluster_ep_ids)
+        return "failed", merge_calls
+
+    # Only version after validation passes — avoids noise from failed merges
     _version_knowledge_file(filepath)
     filepath.write_text(merged_text, encoding="utf-8")
-    merged_parsed = _parse_frontmatter(merged_text)
     upsert_knowledge_topic(
         filename=existing["filename"],
         title=merged_parsed["meta"].get("title", existing["title"]),
@@ -631,6 +662,8 @@ def _process_cluster(
                 existing, response_text, cluster_episodes, cluster_ep_ids, confidence,
             )
             api_calls += merge_calls
+            if status == "failed":
+                return {"status": "failed", "api_calls": api_calls, "failed_ep_ids": cluster_ep_ids}
             return {"status": status, "api_calls": api_calls}
         except Exception as e:
             logger.error("Merge failed for topic %s: %s", existing["filename"], e, exc_info=True)
@@ -670,6 +703,12 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
     CONSOLIDATION_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     topic_cache.invalidate()
+
+    # Reset episodes stuck at max attempts whose last retry was >24h ago,
+    # so they get another chance after backend recovery.
+    reset_count = reset_stale_consolidation_attempts(max_attempts=CONSOLIDATION_MAX_ATTEMPTS)
+    if reset_count:
+        logger.info("Reset consolidation_attempts for %d stale episodes", reset_count)
 
     run_id = start_consolidation_run()
     logger.info("Consolidation run %s started", run_id)
