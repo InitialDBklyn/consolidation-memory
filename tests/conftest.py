@@ -8,13 +8,13 @@ import pytest
 @pytest.fixture(autouse=True)
 def tmp_data_dir(tmp_path):
     """Override config paths to use temp directory for ALL tests."""
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
+    data_dir = tmp_path / "data" / "projects" / "default"
+    data_dir.mkdir(parents=True)
     (data_dir / "knowledge").mkdir()
     (data_dir / "knowledge" / "versions").mkdir()
     (data_dir / "consolidation_logs").mkdir()
-    (tmp_path / "logs").mkdir()
-    (tmp_path / "backups").mkdir()
+    (tmp_path / "data" / "logs").mkdir(parents=True)
+    (data_dir / "backups").mkdir()
 
     db_path = data_dir / "memory.db"
     faiss_idx = data_dir / "faiss_index.bin"
@@ -24,13 +24,15 @@ def tmp_data_dir(tmp_path):
     knowledge = data_dir / "knowledge"
     knowledge_versions = knowledge / "versions"
     consol_log = data_dir / "consolidation_logs"
-    log_dir = tmp_path / "logs"
-    backup_dir = tmp_path / "backups"
+    log_dir = tmp_path / "data" / "logs"
+    backup_dir = data_dir / "backups"
 
     # Tests use 384-dim vectors regardless of user config
     test_dim = 384
 
     patches = [
+        patch("consolidation_memory.config._base_data_dir", tmp_path / "data"),
+        patch("consolidation_memory.config._active_project", "default"),
         patch("consolidation_memory.config.DATA_DIR", data_dir),
         patch("consolidation_memory.config.DB_PATH", db_path),
         patch("consolidation_memory.config.FAISS_INDEX_PATH", faiss_idx),
@@ -44,16 +46,8 @@ def tmp_data_dir(tmp_path):
         patch("consolidation_memory.config.BACKUP_DIR", backup_dir),
         patch("consolidation_memory.config.EMBEDDING_DIMENSION", test_dim),
         patch("consolidation_memory.config.EMBEDDING_BACKEND", "fastembed"),
-        # Patch modules that import these at module level
-        patch("consolidation_memory.database.DB_PATH", db_path),
-        patch("consolidation_memory.vector_store.FAISS_INDEX_PATH", faiss_idx),
-        patch("consolidation_memory.vector_store.FAISS_ID_MAP_PATH", faiss_map),
-        patch("consolidation_memory.vector_store.FAISS_TOMBSTONE_PATH", faiss_tombstone),
-        patch("consolidation_memory.vector_store.FAISS_RELOAD_SIGNAL", faiss_reload),
+        # Patch modules that still import non-path constants at module level
         patch("consolidation_memory.vector_store.EMBEDDING_DIMENSION", test_dim),
-        patch("consolidation_memory.consolidation.KNOWLEDGE_DIR", knowledge),
-        patch("consolidation_memory.consolidation.KNOWLEDGE_VERSIONS_DIR", knowledge_versions),
-        patch("consolidation_memory.consolidation.CONSOLIDATION_LOG_DIR", consol_log),
         patch("consolidation_memory.consolidation.CONSOLIDATION_PRUNE_ENABLED", False),
         # context_assembler module-level imports
         patch("consolidation_memory.context_assembler.RECENCY_HALF_LIFE_DAYS", 90.0),

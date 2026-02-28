@@ -22,11 +22,8 @@ import time
 import faiss
 import numpy as np
 
+from consolidation_memory import config as _config
 from consolidation_memory.config import (
-    FAISS_INDEX_PATH,
-    FAISS_ID_MAP_PATH,
-    FAISS_TOMBSTONE_PATH,
-    FAISS_RELOAD_SIGNAL,
     EMBEDDING_DIMENSION,
     FAISS_SEARCH_FETCH_K_PADDING,
     FAISS_SIZE_WARNING_THRESHOLD,
@@ -47,10 +44,10 @@ class VectorStore:
 
     def _load_or_create(self) -> None:
         """Load existing FAISS index and id map from disk, or create empty. Validates dimension and id-map integrity on load."""
-        if FAISS_INDEX_PATH.exists() and FAISS_ID_MAP_PATH.exists():
-            logger.info("Loading FAISS index from %s", FAISS_INDEX_PATH)
-            self._index = faiss.read_index(str(FAISS_INDEX_PATH))
-            with open(FAISS_ID_MAP_PATH, "r") as f:
+        if _config.FAISS_INDEX_PATH.exists() and _config.FAISS_ID_MAP_PATH.exists():
+            logger.info("Loading FAISS index from %s", _config.FAISS_INDEX_PATH)
+            self._index = faiss.read_index(str(_config.FAISS_INDEX_PATH))
+            with open(_config.FAISS_ID_MAP_PATH, "r") as f:
                 self._id_map = json.load(f)
             self._uuid_to_pos = {uid: i for i, uid in enumerate(self._id_map)}
 
@@ -92,9 +89,9 @@ class VectorStore:
             self._uuid_to_pos = {}
             self._tombstones = set()
 
-        if FAISS_TOMBSTONE_PATH.exists():
+        if _config.FAISS_TOMBSTONE_PATH.exists():
             try:
-                with open(FAISS_TOMBSTONE_PATH, "r") as f:
+                with open(_config.FAISS_TOMBSTONE_PATH, "r") as f:
                     self._tombstones = set(json.load(f))
                 if self._tombstones:
                     logger.info("Loaded %d tombstones", len(self._tombstones))
@@ -106,7 +103,7 @@ class VectorStore:
 
     def _save(self) -> None:
         """Atomic save: write to temp files, then rename over originals."""
-        parent = FAISS_INDEX_PATH.parent
+        parent = _config.FAISS_INDEX_PATH.parent
         parent.mkdir(parents=True, exist_ok=True)
 
         idx_fd, idx_tmp = tempfile.mkstemp(dir=str(parent), suffix=".faiss.tmp")
@@ -126,12 +123,12 @@ class VectorStore:
             os.unlink(map_tmp)
             raise
 
-        os.replace(idx_tmp, str(FAISS_INDEX_PATH))
-        os.replace(map_tmp, str(FAISS_ID_MAP_PATH))
+        os.replace(idx_tmp, str(_config.FAISS_INDEX_PATH))
+        os.replace(map_tmp, str(_config.FAISS_ID_MAP_PATH))
 
     def _save_tombstones(self) -> None:
         """Atomic save of tombstone set."""
-        parent = FAISS_TOMBSTONE_PATH.parent
+        parent = _config.FAISS_TOMBSTONE_PATH.parent
         parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(parent), suffix=".json.tmp")
         try:
@@ -140,23 +137,23 @@ class VectorStore:
         except Exception:
             os.unlink(tmp)
             raise
-        os.replace(tmp, str(FAISS_TOMBSTONE_PATH))
+        os.replace(tmp, str(_config.FAISS_TOMBSTONE_PATH))
 
     # ── Concurrency ──────────────────────────────────────────────────────────
 
     def reload_if_stale(self) -> bool:
         """Reload FAISS index if the reload signal file is newer than last load. Thread-safe via double-checked lock. Returns True if reloaded."""
-        if not FAISS_RELOAD_SIGNAL.exists():
+        if not _config.FAISS_RELOAD_SIGNAL.exists():
             return False
         try:
-            signal_mtime = FAISS_RELOAD_SIGNAL.stat().st_mtime
+            signal_mtime = _config.FAISS_RELOAD_SIGNAL.stat().st_mtime
         except OSError:
             return False
         if signal_mtime <= self._last_load_time:
             return False
         with self._lock:
             try:
-                signal_mtime = FAISS_RELOAD_SIGNAL.stat().st_mtime
+                signal_mtime = _config.FAISS_RELOAD_SIGNAL.stat().st_mtime
             except OSError:
                 return False
             if signal_mtime <= self._last_load_time:
@@ -168,8 +165,8 @@ class VectorStore:
     @staticmethod
     def signal_reload() -> None:
         """Write reload signal file to notify other processes to reload FAISS index."""
-        FAISS_RELOAD_SIGNAL.parent.mkdir(parents=True, exist_ok=True)
-        FAISS_RELOAD_SIGNAL.write_text(str(time.time()), encoding="utf-8")
+        _config.FAISS_RELOAD_SIGNAL.parent.mkdir(parents=True, exist_ok=True)
+        _config.FAISS_RELOAD_SIGNAL.write_text(str(time.time()), encoding="utf-8")
         logger.info("Wrote FAISS reload signal")
 
     # ── Add ──────────────────────────────────────────────────────────────────

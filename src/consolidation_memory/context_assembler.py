@@ -11,9 +11,9 @@ from datetime import datetime, timezone
 
 import numpy as np
 
+from consolidation_memory import config as _config
 from consolidation_memory.config import (
     CONSOLIDATION_PRIORITY_WEIGHTS,
-    KNOWLEDGE_DIR,
     KNOWLEDGE_KEYWORD_WEIGHT,
     KNOWLEDGE_MAX_RESULTS,
     KNOWLEDGE_RELEVANCE_THRESHOLD,
@@ -236,7 +236,7 @@ def _search_knowledge(
         if relevance < KNOWLEDGE_RELEVANCE_THRESHOLD:
             continue
 
-        filepath = KNOWLEDGE_DIR / topic["filename"]
+        filepath = _config.KNOWLEDGE_DIR / topic["filename"]
         content = ""
         if filepath.exists():
             content = filepath.read_text(encoding="utf-8")

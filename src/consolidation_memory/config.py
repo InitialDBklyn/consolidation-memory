@@ -13,6 +13,7 @@ Tests can patch these attributes normally with unittest.mock.patch.
 
 import logging as _logging
 import os
+import re as _re
 import sys
 from pathlib import Path
 
@@ -64,12 +65,35 @@ def get_default_config_dir() -> Path:
 
 _cfg = _load_config()
 
+# ── Project name validation ──────────────────────────────────────────────────
+_PROJECT_NAME_RE = _re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def validate_project_name(name: str) -> str:
+    """Validate and return a project name. Raises ValueError on invalid input."""
+    if not name:
+        raise ValueError("Project name must not be empty")
+    if not _PROJECT_NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid project name {name!r}: must match {_PROJECT_NAME_RE.pattern} "
+            f"(lowercase alphanumeric, hyphens, underscores; 1-64 chars; "
+            f"must start with letter or digit)"
+        )
+    return name
+
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 _default_data = Path(user_data_dir(APP_NAME))
 _paths = _cfg.get("paths", {})
 
 _data_dir_str = _paths.get("data_dir", "")
-DATA_DIR = Path(_data_dir_str).expanduser().resolve() if _data_dir_str else _default_data
+_base_data_dir = Path(_data_dir_str).expanduser().resolve() if _data_dir_str else _default_data
+
+_active_project = validate_project_name(
+    os.environ.get("CONSOLIDATION_MEMORY_PROJECT", "default")
+)
+
+DATA_DIR = _base_data_dir / "projects" / _active_project
 
 DB_PATH = DATA_DIR / "memory.db"
 FAISS_INDEX_PATH = DATA_DIR / "faiss_index.bin"
@@ -78,7 +102,7 @@ FAISS_TOMBSTONE_PATH = DATA_DIR / "faiss_tombstones.json"
 FAISS_RELOAD_SIGNAL = DATA_DIR / ".faiss_reload"
 KNOWLEDGE_DIR = DATA_DIR / "knowledge"
 CONSOLIDATION_LOG_DIR = DATA_DIR / "consolidation_logs"
-LOG_DIR = DATA_DIR / "logs"
+LOG_DIR = _base_data_dir / "logs"
 BACKUP_DIR = DATA_DIR / "backups"
 
 # ── Embedding model ──────────────────────────────────────────────────────────
@@ -150,6 +174,57 @@ CONSOLIDATION_PRIORITY_WEIGHTS = {
 # ── Knowledge versioning ─────────────────────────────────────────────────────
 KNOWLEDGE_VERSIONS_DIR = KNOWLEDGE_DIR / "versions"
 KNOWLEDGE_MAX_VERSIONS = 5
+
+
+# ── Project switching ────────────────────────────────────────────────────────
+
+
+def get_active_project() -> str:
+    """Return the currently active project name."""
+    return _active_project
+
+
+def set_active_project(name: str | None = None) -> str:
+    """Switch to a different project namespace.
+
+    Validates the name, updates ``_active_project``, and recalculates every
+    path global so that consumer modules accessing e.g. ``config.DB_PATH``
+    dynamically will see the new values.
+
+    Args:
+        name: Project name to switch to.  If *None*, reads the
+              ``CONSOLIDATION_MEMORY_PROJECT`` env var (default ``"default"``).
+
+    Returns:
+        The validated project name now active.
+
+    Raises:
+        ValueError: If *name* is invalid.
+    """
+    global _active_project, DATA_DIR, DB_PATH, FAISS_INDEX_PATH
+    global FAISS_ID_MAP_PATH, FAISS_TOMBSTONE_PATH, FAISS_RELOAD_SIGNAL
+    global KNOWLEDGE_DIR, KNOWLEDGE_VERSIONS_DIR, CONSOLIDATION_LOG_DIR
+    global BACKUP_DIR
+
+    if name is None:
+        name = os.environ.get("CONSOLIDATION_MEMORY_PROJECT", "default")
+
+    _active_project = validate_project_name(name)
+
+    DATA_DIR = _base_data_dir / "projects" / _active_project
+    DB_PATH = DATA_DIR / "memory.db"
+    FAISS_INDEX_PATH = DATA_DIR / "faiss_index.bin"
+    FAISS_ID_MAP_PATH = DATA_DIR / "faiss_id_map.json"
+    FAISS_TOMBSTONE_PATH = DATA_DIR / "faiss_tombstones.json"
+    FAISS_RELOAD_SIGNAL = DATA_DIR / ".faiss_reload"
+    KNOWLEDGE_DIR = DATA_DIR / "knowledge"
+    KNOWLEDGE_VERSIONS_DIR = KNOWLEDGE_DIR / "versions"
+    CONSOLIDATION_LOG_DIR = DATA_DIR / "consolidation_logs"
+    BACKUP_DIR = DATA_DIR / "backups"
+    # NOTE: LOG_DIR intentionally NOT recalculated — logs are shared across projects.
+
+    return _active_project
+
 
 # ── Deduplication ─────────────────────────────────────────────────────────────
 _dedup = _cfg.get("dedup", {})

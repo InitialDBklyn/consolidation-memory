@@ -21,11 +21,11 @@ import numpy as np
 from scipy.cluster.hierarchy import linkage, fcluster
 from scipy.spatial.distance import squareform
 
+from consolidation_memory import config as _config
 from consolidation_memory.config import (
     FAISS_COMPACTION_THRESHOLD,
     LLM_VALIDATION_RETRY,
     CONSOLIDATION_CLUSTER_THRESHOLD,
-    CONSOLIDATION_LOG_DIR,
     CONSOLIDATION_MAX_CLUSTER_SIZE,
     CONSOLIDATION_MAX_EPISODES_PER_RUN,
     CONSOLIDATION_MIN_CLUSTER_SIZE,
@@ -38,8 +38,6 @@ from consolidation_memory.config import (
     CONSOLIDATION_MAX_DURATION,
     CONSOLIDATION_MAX_ATTEMPTS,
     LLM_CALL_TIMEOUT,
-    KNOWLEDGE_DIR,
-    KNOWLEDGE_VERSIONS_DIR,
     KNOWLEDGE_MAX_VERSIONS,
     RENDER_MARKDOWN,
     SURPRISE_BOOST_PER_ACCESS,
@@ -606,19 +604,19 @@ def _version_knowledge_file(filepath: Path) -> None:
     if not filepath.exists():
         return
 
-    KNOWLEDGE_VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    _config.KNOWLEDGE_VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
     stem = filepath.stem
     versioned_name = f"{stem}.{timestamp}.md"
-    versioned_path = KNOWLEDGE_VERSIONS_DIR / versioned_name
+    versioned_path = _config.KNOWLEDGE_VERSIONS_DIR / versioned_name
 
     shutil.copy2(str(filepath), str(versioned_path))
     logger.info("Versioned %s -> %s", filepath.name, versioned_name)
 
     pattern = f"{stem}.*.md"
     existing_versions = sorted(
-        KNOWLEDGE_VERSIONS_DIR.glob(pattern),
+        _config.KNOWLEDGE_VERSIONS_DIR.glob(pattern),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -816,7 +814,7 @@ def _merge_into_existing(
 
     # Parse existing topic metadata
     existing_tags = []
-    filepath = KNOWLEDGE_DIR / existing["filename"]
+    filepath = _config.KNOWLEDGE_DIR / existing["filename"]
     if filepath.exists():
         existing_content = filepath.read_text(encoding="utf-8")
         parsed_fm = _parse_frontmatter(existing_content)
@@ -951,11 +949,11 @@ def _process_cluster(
     else:
         base_slug = _slugify(title)
         filename = base_slug + ".md"
-        filepath = KNOWLEDGE_DIR / filename
+        filepath = _config.KNOWLEDGE_DIR / filename
         counter = 2
         while filepath.exists():
             filename = f"{base_slug}_{counter}.md"
-            filepath = KNOWLEDGE_DIR / filename
+            filepath = _config.KNOWLEDGE_DIR / filename
             counter += 1
 
         # Store records in DB
@@ -999,9 +997,9 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
             a new one (backwards compatible for CLI/scheduled task usage).
     """
     ensure_schema()
-    KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
-    KNOWLEDGE_VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    CONSOLIDATION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _config.KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
+    _config.KNOWLEDGE_VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    _config.CONSOLIDATION_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     topic_cache.invalidate()
     record_cache.invalidate()
@@ -1145,7 +1143,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> dict:
             "failed_episode_ids": all_failed_ep_ids,
         }
 
-        report_path = CONSOLIDATION_LOG_DIR / f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')}.json"
+        report_path = _config.CONSOLIDATION_LOG_DIR / f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')}.json"
         report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
         complete_consolidation_run(
@@ -1207,6 +1205,6 @@ def _update_index() -> None:
             f"Accessed: {topic['access_count']}x*\n"
         )
 
-    index_path = KNOWLEDGE_DIR / "index.md"
+    index_path = _config.KNOWLEDGE_DIR / "index.md"
     index_path.write_text("\n".join(lines), encoding="utf-8")
     logger.info("Updated index.md with %d topics", len(topics))
