@@ -8,6 +8,7 @@ Usage:
     consolidation-memory export      # Export to JSON
     consolidation-memory import PATH # Import from JSON export
     consolidation-memory reindex     # Re-embed all episodes with current backend
+    consolidation-memory dashboard   # Launch TUI dashboard
 """
 
 import argparse
@@ -540,6 +541,17 @@ def cmd_reindex():
     print(f"\nReindex complete: {len(all_ids)} vectors in {dim}-dim index")
 
 
+def cmd_dashboard():
+    """Launch the TUI dashboard."""
+    try:
+        from consolidation_memory.dashboard import DashboardApp
+    except ImportError:
+        print("Dashboard requires textual. Install with: pip install consolidation-memory[dashboard]")
+        sys.exit(1)
+    app = DashboardApp()
+    app.run()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="consolidation-memory",
@@ -564,6 +576,7 @@ def main():
     p_import = sub.add_parser("import", help="Import from JSON export")
     p_import.add_argument("path", help="Path to export JSON file")
     sub.add_parser("reindex", help="Re-embed all episodes with current backend")
+    sub.add_parser("dashboard", help="Launch TUI dashboard")
 
     args = parser.parse_args()
 
@@ -585,6 +598,8 @@ def main():
         cmd_import(args.path)
     elif args.command == "reindex":
         cmd_reindex()
+    elif args.command == "dashboard":
+        cmd_dashboard()
 
 
 if __name__ == "__main__":
