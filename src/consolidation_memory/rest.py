@@ -82,6 +82,9 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         global _client
         _client = MemoryClient()
+        from consolidation_memory.config import get_active_project
+        import logging
+        logging.getLogger("consolidation_memory").info("REST API active project: %s", get_active_project())
         yield
         _client.close()
         _client = None
@@ -98,7 +101,8 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health():
         """Health check."""
-        return {"status": "ok", "version": __version__}
+        from consolidation_memory.config import get_active_project
+        return {"status": "ok", "version": __version__, "project": get_active_project()}
 
     def _require_client() -> MemoryClient:
         if _client is None:

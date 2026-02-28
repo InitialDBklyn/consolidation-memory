@@ -33,6 +33,8 @@ async def lifespan(server: FastMCP):
     from consolidation_memory.client import MemoryClient
 
     logger.info("Starting consolidation_memory MCP server v%s...", __version__)
+    from consolidation_memory.config import get_active_project
+    logger.info("Active project: %s", get_active_project())
 
     _client = MemoryClient()
 

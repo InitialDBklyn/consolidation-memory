@@ -200,6 +200,8 @@ def cmd_status():
         db_size_mb = round(DB_PATH.stat().st_size / (1024 * 1024), 2)
 
     print(f"consolidation-memory v{__version__}")
+    from consolidation_memory.config import get_active_project
+    print(f"Project:     {get_active_project()}")
     print(f"Data dir:    {DATA_DIR}")
     print(f"DB size:     {db_size_mb} MB")
     print(f"Embedding:   {EMBEDDING_BACKEND} ({EMBEDDING_MODEL_NAME}, {EMBEDDING_DIMENSION}-dim)")
@@ -544,6 +546,11 @@ def main():
         description="Persistent semantic memory for AI conversations",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--project", "-p",
+        default=None,
+        help="Project namespace (default: CONSOLIDATION_MEMORY_PROJECT env var or 'default')",
+    )
     sub = parser.add_subparsers(dest="command")
 
     p_serve = sub.add_parser("serve", help="Start server (MCP default, --rest for HTTP)")
@@ -559,6 +566,10 @@ def main():
     sub.add_parser("reindex", help="Re-embed all episodes with current backend")
 
     args = parser.parse_args()
+
+    # Activate project namespace before any command
+    from consolidation_memory.config import set_active_project
+    set_active_project(args.project)
 
     if args.command is None or args.command == "serve":
         cmd_serve(args)
