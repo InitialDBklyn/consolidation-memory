@@ -20,15 +20,21 @@ from consolidation_memory.config import (
     KNOWLEDGE_SEMANTIC_WEIGHT,
     RECALL_MAX_N,
     RECENCY_HALF_LIFE_DAYS,
+    RECORDS_KEYWORD_WEIGHT,
+    RECORDS_MAX_RESULTS,
+    RECORDS_RELEVANCE_THRESHOLD,
+    RECORDS_SEMANTIC_WEIGHT,
 )
 from consolidation_memory.database import (
     get_episodes_batch,
     increment_access,
+    increment_record_access,
     increment_topic_access,
 )
 from consolidation_memory import backends
 from consolidation_memory.vector_store import VectorStore
 from consolidation_memory import topic_cache
+from consolidation_memory import record_cache
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +52,11 @@ def _parse_tags(tags_value: str | list) -> list:
 def invalidate_topic_cache() -> None:
     """Call after consolidation to force re-embedding on next recall."""
     topic_cache.invalidate()
+
+
+def invalidate_record_cache() -> None:
+    """Call after consolidation to force re-embedding on next recall."""
+    record_cache.invalidate()
 
 
 # ── Scoring ───────────────────────────────────────────────────────────────────
@@ -169,13 +180,18 @@ def recall(
     increment_access(accessed_ids)
 
     knowledge = []
+    records = []
     warnings = []
     if include_knowledge:
-        knowledge, warnings = _search_knowledge(query, query_vec)
+        knowledge, kw_warnings = _search_knowledge(query, query_vec)
+        warnings.extend(kw_warnings)
+        records, rec_warnings = _search_records(query, query_vec)
+        warnings.extend(rec_warnings)
 
     return {
         "episodes": episodes,
         "knowledge": knowledge,
+        "records": records,
         "warnings": warnings,
     }
 
@@ -245,3 +261,71 @@ def _search_knowledge(
 
     scored_topics.sort(key=lambda x: x["relevance"], reverse=True)
     return scored_topics[:KNOWLEDGE_MAX_RESULTS], warnings
+
+
+def _search_records(
+    query: str, query_vec: np.ndarray | None = None,
+) -> tuple[list[dict], list[str]]:
+    """Search individual knowledge records by semantic + keyword similarity."""
+    warnings: list[str] = []
+    records, record_vecs = record_cache.get_record_vecs()
+    if not records:
+        return [], warnings
+
+    try:
+        if query_vec is None:
+            query_vec = backends.encode_query(query)
+        if record_vecs is not None:
+            sims = (query_vec @ record_vecs.T).flatten()
+        else:
+            sims = None
+    except Exception as e:
+        logger.warning(
+            "Semantic record search failed, falling back to keyword: %s", e,
+            exc_info=True,
+        )
+        sims = None
+        warnings.append("Record search fell back to keyword-only (embedding failed)")
+
+    query_lower = query.lower()
+    query_words = set(query_lower.split())
+
+    scored_records = []
+    for i, rec in enumerate(records):
+        sem_score = float(sims[i]) if sims is not None else 0.0
+
+        embed_text = rec.get("embedding_text", "").lower()
+        kw_hits = sum(1 for w in query_words if w in embed_text)
+        kw_score = kw_hits / len(query_words) if query_words else 0
+
+        relevance = sem_score * RECORDS_SEMANTIC_WEIGHT + kw_score * RECORDS_KEYWORD_WEIGHT
+
+        if relevance < RECORDS_RELEVANCE_THRESHOLD:
+            continue
+
+        try:
+            content = json.loads(rec["content"]) if isinstance(rec["content"], str) else rec["content"]
+        except (json.JSONDecodeError, TypeError):
+            content = {}
+
+        scored_records.append({
+            "id": rec["id"],
+            "record_type": rec["record_type"],
+            "content": content,
+            "embedding_text": rec.get("embedding_text", ""),
+            "topic_title": rec.get("topic_title", ""),
+            "topic_filename": rec.get("topic_filename", ""),
+            "confidence": rec.get("confidence", 0.8),
+            "relevance": round(relevance, 3),
+        })
+
+    logger.debug(
+        "record_search: %d records checked, %d passed relevance threshold (>=%s)",
+        len(records), len(scored_records), RECORDS_RELEVANCE_THRESHOLD,
+    )
+
+    if scored_records:
+        increment_record_access([r["id"] for r in scored_records])
+
+    scored_records.sort(key=lambda x: x["relevance"], reverse=True)
+    return scored_records[:RECORDS_MAX_RESULTS], warnings

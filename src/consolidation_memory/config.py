@@ -180,6 +180,13 @@ KNOWLEDGE_KEYWORD_WEIGHT = float(_retrieval.get("knowledge_keyword_weight", 0.2)
 KNOWLEDGE_RELEVANCE_THRESHOLD = float(_retrieval.get("knowledge_relevance_threshold", 0.25))
 KNOWLEDGE_MAX_RESULTS = int(_retrieval.get("knowledge_max_results", 5))
 
+# ── Knowledge records ──────────────────────────────────────────────────
+RECORDS_SEMANTIC_WEIGHT = float(_retrieval.get("records_semantic_weight", 0.9))
+RECORDS_KEYWORD_WEIGHT = float(_retrieval.get("records_keyword_weight", 0.1))
+RECORDS_RELEVANCE_THRESHOLD = float(_retrieval.get("records_relevance_threshold", 0.3))
+RECORDS_MAX_RESULTS = int(_retrieval.get("records_max_results", 15))
+RENDER_MARKDOWN = bool(_consol.get("render_markdown", True))
+
 # ── Circuit breaker ─────────────────────────────────────────────────────
 _cb = _cfg.get("circuit_breaker", {})
 CIRCUIT_BREAKER_THRESHOLD = int(_cb.get("threshold", 3))

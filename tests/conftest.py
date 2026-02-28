@@ -61,6 +61,10 @@ def tmp_data_dir(tmp_path):
         patch("consolidation_memory.context_assembler.KNOWLEDGE_KEYWORD_WEIGHT", 0.2),
         patch("consolidation_memory.context_assembler.KNOWLEDGE_RELEVANCE_THRESHOLD", 0.25),
         patch("consolidation_memory.context_assembler.KNOWLEDGE_MAX_RESULTS", 5),
+        patch("consolidation_memory.context_assembler.RECORDS_SEMANTIC_WEIGHT", 0.9),
+        patch("consolidation_memory.context_assembler.RECORDS_KEYWORD_WEIGHT", 0.1),
+        patch("consolidation_memory.context_assembler.RECORDS_RELEVANCE_THRESHOLD", 0.3),
+        patch("consolidation_memory.context_assembler.RECORDS_MAX_RESULTS", 15),
         # consolidation module-level imports
         patch("consolidation_memory.consolidation.CONSOLIDATION_TOPIC_SEMANTIC_THRESHOLD", 0.75),
         patch("consolidation_memory.consolidation.CONSOLIDATION_CONFIDENCE_COHERENCE_W", 0.6),
@@ -69,6 +73,7 @@ def tmp_data_dir(tmp_path):
             "consolidation_memory.consolidation.CONSOLIDATION_STOPWORDS",
             frozenset({"the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "with", "is", "at", "it"}),
         ),
+        patch("consolidation_memory.consolidation.RENDER_MARKDOWN", True),
         patch("consolidation_memory.consolidation.CONSOLIDATION_MAX_DURATION", 1800),
         patch("consolidation_memory.consolidation.CONSOLIDATION_MAX_ATTEMPTS", 5),
         patch("consolidation_memory.consolidation.LLM_CALL_TIMEOUT", 120),

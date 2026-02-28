@@ -133,6 +133,8 @@ MEMORY_RECALL_SCHEMA: dict[str, Any] = {
         "name": "memory_recall",
         "description": (
             "Retrieve relevant memories by semantic similarity. "
+            "Returns episodes, knowledge documents, and individual knowledge records "
+            "(facts, solutions, preferences). "
             "Call this at the start of every new conversation and when context "
             "about the user's setup or preferences would improve your response. "
             "This is your persistent memory."

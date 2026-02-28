@@ -14,6 +14,13 @@ class ContentType(str, Enum):
     PREFERENCE = "preference"
 
 
+class RecordType(str, Enum):
+    """Valid knowledge record types."""
+    FACT = "fact"
+    SOLUTION = "solution"
+    PREFERENCE = "preference"
+
+
 @dataclass
 class StoreResult:
     """Result of a memory store operation."""
@@ -33,6 +40,7 @@ class RecallResult:
 
     episodes: list[dict] = field(default_factory=list)
     knowledge: list[dict] = field(default_factory=list)
+    records: list[dict] = field(default_factory=list)
     total_episodes: int = 0
     total_knowledge_topics: int = 0
     message: str | None = None

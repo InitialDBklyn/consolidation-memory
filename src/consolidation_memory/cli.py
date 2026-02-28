@@ -212,6 +212,11 @@ def cmd_status():
 
     kb = stats["knowledge_base"]
     print(f"Knowledge:   {kb['total_topics']} topics, {kb['total_facts']} facts")
+    if "total_records" in kb:
+        rbt = kb.get("records_by_type", {})
+        print(f"Records:     {kb['total_records']} total "
+              f"({rbt.get('facts', 0)} facts, {rbt.get('solutions', 0)} solutions, "
+              f"{rbt.get('preferences', 0)} preferences)")
 
     if last_run:
         print(f"\nLast consolidation: {last_run['started_at']}")
@@ -222,7 +227,9 @@ def cmd_status():
 
 def cmd_export():
     """Export to JSON."""
-    from consolidation_memory.database import ensure_schema, get_all_episodes, get_all_knowledge_topics
+    from consolidation_memory.database import (
+        ensure_schema, get_all_episodes, get_all_knowledge_topics, get_all_active_records,
+    )
     from consolidation_memory.config import BACKUP_DIR, KNOWLEDGE_DIR, MAX_BACKUPS
     from datetime import datetime, timezone
 
@@ -237,12 +244,19 @@ def cmd_export():
         content = filepath.read_text(encoding="utf-8") if filepath.exists() else ""
         knowledge.append({**topic, "file_content": content})
 
+    records = get_all_active_records()
+
     snapshot = {
         "exported_at": datetime.now(timezone.utc).isoformat(),
-        "version": "1.0",
+        "version": "1.1",
         "episodes": episodes,
         "knowledge_topics": knowledge,
-        "stats": {"episode_count": len(episodes), "knowledge_count": len(knowledge)},
+        "knowledge_records": records,
+        "stats": {
+            "episode_count": len(episodes),
+            "knowledge_count": len(knowledge),
+            "record_count": len(records),
+        },
     }
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -253,7 +267,7 @@ def cmd_export():
     for old in existing[MAX_BACKUPS:]:
         old.unlink()
 
-    print(f"Exported {len(episodes)} episodes + {len(knowledge)} topics to {export_path}")
+    print(f"Exported {len(episodes)} episodes + {len(knowledge)} topics + {len(records)} records to {export_path}")
 
 
 def _validate_import(data: dict) -> list[str]:
@@ -263,7 +277,7 @@ def _validate_import(data: dict) -> list[str]:
     if not isinstance(data, dict):
         return ["Top-level value must be a JSON object"]
 
-    for key in ("episodes", "knowledge_topics", "stats", "version"):
+    for key in ("episodes", "knowledge_topics", "stats"):
         if key not in data:
             errors.append(f"Missing required key: {key!r}")
 
@@ -313,6 +327,7 @@ def cmd_import(path: str):
     from pathlib import Path
     from consolidation_memory.database import (
         ensure_schema, insert_episode, upsert_knowledge_topic, get_episode,
+        insert_knowledge_records,
     )
     from consolidation_memory.backends import encode_documents
     from consolidation_memory.vector_store import VectorStore
@@ -397,6 +412,29 @@ def cmd_import(path: str):
         k_imported += 1
 
     print(f"Knowledge: {k_imported} topics imported")
+
+    # Import knowledge records (v1.1+ exports)
+    r_imported = 0
+    for rec in data.get("knowledge_records", []):
+        if not rec.get("topic_id") or not rec.get("record_type"):
+            continue
+        try:
+            insert_knowledge_records(
+                topic_id=rec["topic_id"],
+                records=[{
+                    "record_type": rec["record_type"],
+                    "content": rec.get("content", "{}"),
+                    "embedding_text": rec.get("embedding_text", ""),
+                    "confidence": rec.get("confidence", 0.8),
+                }],
+                source_episodes=json.loads(rec["source_episodes"]) if isinstance(rec.get("source_episodes"), str) else rec.get("source_episodes", []),
+            )
+            r_imported += 1
+        except Exception as e:
+            print(f"  Warning: Failed to import record {rec.get('id', '?')}: {e}")
+
+    if r_imported:
+        print(f"Records: {r_imported} imported")
 
     VectorStore.signal_reload()
     print("\nImport complete.")

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.0 — 2026-02-28
+
+### Features
+
+- **Schema-guided knowledge extraction** — consolidation now outputs structured JSON records instead of free-form markdown, making individual facts, solutions, and preferences independently searchable
+- **New `knowledge_records` table** (schema v5) — each knowledge record is stored as a typed row with its own embedding text, linked to a parent `knowledge_topics` entry
+- **Three record types**: `fact` (subject + info), `solution` (problem + fix + context), `preference` (key + value + context)
+- **Record-level recall** — `memory_recall` now returns a `records` field with individually ranked knowledge records alongside episodes and knowledge documents
+- **Record embedding cache** — new `record_cache` module (same thread-safe pattern as `topic_cache`) caches record embeddings for fast numpy matmul search during recall
+- **Markdown rendering from records** — optional (enabled by default via `render_markdown` config), generates human-readable .md files from structured records
+- **Record merge on consolidation** — when merging into existing topics, old records are soft-deleted and replaced with LLM-merged records
+- **JSON extraction validation** — validates LLM output as valid JSON with required fields, record type validation, and specifics preservation checks
+- **Export/import includes records** — export format bumped to v1.1, includes `knowledge_records` array
+
+### Configuration
+
+- `records_semantic_weight` (default 0.9) — semantic similarity weight for record search
+- `records_keyword_weight` (default 0.1) — keyword match weight for record search
+- `records_relevance_threshold` (default 0.3) — minimum relevance score for record results
+- `records_max_results` (default 15) — maximum records returned per recall
+- `render_markdown` (default true) — whether to render .md files from records
+
+### Internal
+
+- Schema migration v5: `knowledge_records` table with indexes on `topic_id`, `record_type`, `deleted`
+- `get_stats()` now includes `total_records` and `records_by_type` breakdown
+- CLI `status` shows record counts by type
+- 24 new tests (174 total, 7 skipped)
+
 ## 0.4.0 — 2026-02-28
 
 ### Bug Fixes

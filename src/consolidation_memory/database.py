@@ -22,7 +22,7 @@ _conn_list_lock = threading.Lock()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 # Future migrations go here: version -> list of SQL statements
 MIGRATIONS: dict[int, list[str]] = {
@@ -49,6 +49,25 @@ MIGRATIONS: dict[int, list[str]] = {
     ],
     4: [
         "CREATE INDEX IF NOT EXISTS idx_episodes_consolidation_attempts ON episodes(consolidation_attempts)",
+    ],
+    5: [
+        """CREATE TABLE IF NOT EXISTS knowledge_records (
+            id              TEXT PRIMARY KEY,
+            topic_id        TEXT NOT NULL,
+            record_type     TEXT NOT NULL,
+            content         TEXT NOT NULL,
+            embedding_text  TEXT NOT NULL,
+            source_episodes TEXT NOT NULL DEFAULT '[]',
+            confidence      REAL NOT NULL DEFAULT 0.8,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL,
+            access_count    INTEGER NOT NULL DEFAULT 0,
+            deleted         INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (topic_id) REFERENCES knowledge_topics(id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_records_topic ON knowledge_records(topic_id)",
+        "CREATE INDEX IF NOT EXISTS idx_records_type ON knowledge_records(record_type)",
+        "CREATE INDEX IF NOT EXISTS idx_records_deleted ON knowledge_records(deleted)",
     ],
 }
 
@@ -438,6 +457,97 @@ def increment_topic_access(filenames: list[str]) -> None:
         )
 
 
+# ── Knowledge Record CRUD ─────────────────────────────────────────────────
+
+def insert_knowledge_records(
+    topic_id: str,
+    records: list[dict[str, Any]],
+    source_episodes: list[str] | None = None,
+) -> list[str]:
+    """Insert multiple knowledge records for a topic.
+
+    Each record dict must have: record_type, content (JSON-serializable dict),
+    embedding_text. Optional: confidence.
+
+    Returns list of inserted record IDs.
+    """
+    if not records:
+        return []
+    now = _now()
+    src = json.dumps(source_episodes or [])
+    ids: list[str] = []
+    with get_connection() as conn:
+        for rec in records:
+            rec_id = str(uuid.uuid4())
+            content = rec["content"] if isinstance(rec["content"], str) else json.dumps(rec["content"])
+            conn.execute(
+                """INSERT INTO knowledge_records
+                   (id, topic_id, record_type, content, embedding_text,
+                    source_episodes, confidence, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (rec_id, topic_id, rec["record_type"], content,
+                 rec["embedding_text"], src, rec.get("confidence", 0.8),
+                 now, now),
+            )
+            ids.append(rec_id)
+    return ids
+
+
+def get_all_active_records() -> list[dict[str, Any]]:
+    """Return all non-deleted knowledge records."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT kr.*, kt.filename as topic_filename, kt.title as topic_title
+               FROM knowledge_records kr
+               JOIN knowledge_topics kt ON kr.topic_id = kt.id
+               WHERE kr.deleted = 0
+               ORDER BY kr.updated_at DESC"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_records_by_topic(topic_id: str) -> list[dict[str, Any]]:
+    """Return all active records for a specific topic."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM knowledge_records WHERE topic_id = ? AND deleted = 0",
+            (topic_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def soft_delete_records_by_topic(topic_id: str) -> int:
+    """Soft-delete all records for a topic. Returns count of affected rows."""
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "UPDATE knowledge_records SET deleted = 1, updated_at = ? WHERE topic_id = ? AND deleted = 0",
+            (_now(), topic_id),
+        )
+    return cursor.rowcount
+
+
+def increment_record_access(record_ids: list[str]) -> None:
+    """Increment access count for the given records."""
+    if not record_ids:
+        return
+    with get_connection() as conn:
+        placeholders = ",".join("?" for _ in record_ids)
+        conn.execute(
+            f"""UPDATE knowledge_records SET access_count = access_count + 1,
+                updated_at = ? WHERE id IN ({placeholders})""",
+            [_now()] + record_ids,
+        )
+
+
+def get_record_count() -> int:
+    """Return count of active (non-deleted) knowledge records."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM knowledge_records WHERE deleted = 0"
+        ).fetchone()
+    return row["cnt"] if row else 0
+
+
 # ── Consolidation Run Tracking ──────────────────────────────────────────────
 
 def start_consolidation_run() -> str:
@@ -537,6 +647,14 @@ def get_stats() -> dict[str, Any]:
                       COALESCE(SUM(fact_count), 0) as total_facts
                FROM knowledge_topics"""
         ).fetchone()
+        rec_counts = conn.execute(
+            """SELECT
+                 COUNT(*) FILTER (WHERE deleted = 0) as total_records,
+                 COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'fact') as facts,
+                 COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'solution') as solutions,
+                 COUNT(*) FILTER (WHERE deleted = 0 AND record_type = 'preference') as preferences
+               FROM knowledge_records"""
+        ).fetchone()
 
     return {
         "episodic_buffer": {
@@ -548,6 +666,12 @@ def get_stats() -> dict[str, Any]:
         "knowledge_base": {
             "total_topics": kt_counts["total_topics"],
             "total_facts": kt_counts["total_facts"],
+            "total_records": rec_counts["total_records"],
+            "records_by_type": {
+                "facts": rec_counts["facts"],
+                "solutions": rec_counts["solutions"],
+                "preferences": rec_counts["preferences"],
+            },
         },
     }
 

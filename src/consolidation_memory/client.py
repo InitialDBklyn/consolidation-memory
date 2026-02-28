@@ -360,14 +360,16 @@ class MemoryClient:
 
         stats = get_stats()
 
+        records = result.get("records", [])
         logger.info(
-            "Recall query='%s' returned %d episodes, %d knowledge entries",
-            query[:80], len(result["episodes"]), len(result["knowledge"]),
+            "Recall query='%s' returned %d episodes, %d knowledge entries, %d records",
+            query[:80], len(result["episodes"]), len(result["knowledge"]), len(records),
         )
 
         return RecallResult(
             episodes=result["episodes"],
             knowledge=result["knowledge"],
+            records=records,
             total_episodes=stats["episodic_buffer"]["total"],
             total_knowledge_topics=stats["knowledge_base"]["total_topics"],
             warnings=result.get("warnings", []),
@@ -516,7 +518,9 @@ class MemoryClient:
             ExportResult with status, file path, and counts.
         """
         from consolidation_memory.config import BACKUP_DIR, KNOWLEDGE_DIR, MAX_BACKUPS
-        from consolidation_memory.database import get_all_episodes, get_all_knowledge_topics
+        from consolidation_memory.database import (
+            get_all_episodes, get_all_knowledge_topics, get_all_active_records,
+        )
 
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -533,14 +537,18 @@ class MemoryClient:
                 content = filepath.read_text(encoding="utf-8")
             knowledge.append({**topic, "file_content": content})
 
+        records = get_all_active_records()
+
         snapshot = {
             "exported_at": datetime.now(timezone.utc).isoformat(),
-            "version": "1.0",
+            "version": "1.1",
             "episodes": episodes,
             "knowledge_topics": knowledge,
+            "knowledge_records": records,
             "stats": {
                 "episode_count": len(episodes),
                 "knowledge_count": len(knowledge),
+                "record_count": len(records),
             },
         }
 
@@ -664,6 +672,10 @@ class MemoryClient:
                     confidence=float(meta.get("confidence", topic["confidence"])),
                 )
                 break
+
+        from consolidation_memory import topic_cache as _tc, record_cache as _rc
+        _tc.invalidate()
+        _rc.invalidate()
 
         logger.info("Corrected knowledge topic: %s", topic_filename)
 
