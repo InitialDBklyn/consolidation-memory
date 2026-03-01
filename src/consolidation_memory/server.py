@@ -276,6 +276,55 @@ async def memory_consolidate() -> str:
     return json.dumps({"status": "completed", "report": result}, default=str)
 
 
+@mcp.tool()
+async def memory_timeline(topic: str) -> str:
+    """Show how understanding of a topic has changed over time.
+
+    Returns all knowledge records matching the topic sorted chronologically,
+    including expired/superseded records. Shows what was believed, when it
+    changed, and what replaced it. Useful for questions like "how has my
+    understanding of X evolved?"
+
+    Args:
+        topic: Natural language topic to query (e.g., 'frontend framework preference').
+    """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
+    result = await asyncio.to_thread(_client.timeline, topic)
+    return json.dumps(dataclasses.asdict(result), default=str)
+
+
+@mcp.tool()
+async def memory_browse() -> str:
+    """Browse all knowledge topics with summaries and metadata.
+
+    Returns a list of all knowledge topics including titles, summaries,
+    record counts by type, confidence scores, and file paths. Use this
+    to see what the memory system has learned and consolidated.
+    """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
+    result = await asyncio.to_thread(_client.browse)
+    return json.dumps(dataclasses.asdict(result), default=str)
+
+
+@mcp.tool()
+async def memory_read_topic(filename: str) -> str:
+    """Read the full markdown content of a knowledge topic.
+
+    Use memory_browse first to see available topics, then read specific
+    ones to see the full details including all extracted facts, solutions,
+    preferences, and procedures.
+
+    Args:
+        filename: The filename of the knowledge topic (e.g., 'python_setup.md').
+    """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
+    result = await asyncio.to_thread(_client.read_topic, filename)
+    return json.dumps(dataclasses.asdict(result), default=str)
+
+
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 def run_server():

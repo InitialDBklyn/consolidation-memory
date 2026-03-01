@@ -689,6 +689,52 @@ def cmd_reindex():
     print(f"\nReindex complete: {len(all_ids)} vectors in {dim}-dim index")
 
 
+def cmd_browse():
+    """List knowledge topics interactively."""
+    from consolidation_memory.database import ensure_schema, get_all_knowledge_topics, get_all_active_records
+    from consolidation_memory.config import get_config
+
+    cfg = get_config()
+    ensure_schema()
+    topics = get_all_knowledge_topics()
+
+    if not topics:
+        print("No knowledge topics yet. Run consolidation to generate knowledge.")
+        return
+
+    records = get_all_active_records(include_expired=False)
+    records_by_topic: dict[str, dict[str, int]] = {}
+    for rec in records:
+        tid = rec["topic_id"]
+        if tid not in records_by_topic:
+            records_by_topic[tid] = {"facts": 0, "solutions": 0, "preferences": 0, "procedures": 0}
+        rt = rec.get("record_type", "fact")
+        if rt in records_by_topic[tid]:
+            records_by_topic[tid][rt] += 1
+
+    print(f"consolidation-memory v{__version__} — knowledge browser\n")
+    print(f"Knowledge directory: {cfg.KNOWLEDGE_DIR}\n")
+
+    for i, topic in enumerate(topics, 1):
+        filepath = cfg.KNOWLEDGE_DIR / topic["filename"]
+        rc = records_by_topic.get(topic["id"], {})
+        exists = filepath.exists()
+
+        parts = []
+        for rtype in ("facts", "solutions", "preferences", "procedures"):
+            count = rc.get(rtype, 0)
+            if count > 0:
+                parts.append(f"{count} {rtype}")
+        records_str = ", ".join(parts) if parts else "no records"
+
+        print(f"  {i}. {topic['title']}")
+        print(f"     {topic['summary'][:100]}{'...' if len(topic.get('summary', '')) > 100 else ''}")
+        print(f"     {records_str} | confidence: {topic.get('confidence', 0):.2f} | "
+              f"updated: {topic.get('updated_at', 'unknown')}")
+        print(f"     file: {topic['filename']} {'[exists]' if exists else '[missing]'}")
+        print()
+
+
 def cmd_dashboard():
     """Launch the TUI dashboard."""
     try:
@@ -725,6 +771,7 @@ def main():
     p_import = sub.add_parser("import", help="Import from JSON export")
     p_import.add_argument("path", help="Path to export JSON file")
     sub.add_parser("reindex", help="Re-embed all episodes with current backend")
+    sub.add_parser("browse", help="Browse knowledge topics")
     sub.add_parser("dashboard", help="Launch TUI dashboard")
 
     args = parser.parse_args()
@@ -749,6 +796,8 @@ def main():
         cmd_import(args.path)
     elif args.command == "reindex":
         cmd_reindex()
+    elif args.command == "browse":
+        cmd_browse()
     elif args.command == "dashboard":
         cmd_dashboard()
 

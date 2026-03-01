@@ -22,6 +22,9 @@ _LAZY_IMPORTS = {
     "HealthStatus": "consolidation_memory.types",
     "StatsDict": "consolidation_memory.types",
     "CompactResult": "consolidation_memory.types",
+    "BrowseResult": "consolidation_memory.types",
+    "TopicDetailResult": "consolidation_memory.types",
+    "TimelineResult": "consolidation_memory.types",
     "ContentType": "consolidation_memory.types",
     "RecordType": "consolidation_memory.types",
 }

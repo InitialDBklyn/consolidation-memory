@@ -35,6 +35,9 @@ from consolidation_memory.types import (
     ExportResult,
     CorrectResult,
     CompactResult,
+    BrowseResult,
+    TopicDetailResult,
+    TimelineResult,
 )
 
 logger = logging.getLogger("consolidation_memory")
@@ -705,6 +708,203 @@ class MemoryClient:
             status="corrected",
             filename=topic_filename,
             title=meta.get("title", ""),
+        )
+
+    def browse(self) -> BrowseResult:
+        """List all knowledge topics with summaries and metadata.
+
+        Returns:
+            BrowseResult with topic list and count.
+        """
+        from consolidation_memory.database import get_all_knowledge_topics, get_all_active_records
+        from consolidation_memory.config import get_config
+
+        cfg = get_config()
+        topics = get_all_knowledge_topics()
+        records = get_all_active_records(include_expired=False)
+
+        # Group record counts by topic_id
+        records_by_topic: dict[str, dict[str, int]] = {}
+        for rec in records:
+            tid = rec["topic_id"]
+            if tid not in records_by_topic:
+                records_by_topic[tid] = {"facts": 0, "solutions": 0, "preferences": 0, "procedures": 0}
+            rt = rec.get("record_type", "fact")
+            if rt in records_by_topic[tid]:
+                records_by_topic[tid][rt] += 1
+
+        result_topics = []
+        for topic in topics:
+            filepath = cfg.KNOWLEDGE_DIR / topic["filename"]
+            rec_counts = records_by_topic.get(topic["id"], {})
+            total_records = sum(rec_counts.values())
+            result_topics.append({
+                "filename": topic["filename"],
+                "title": topic["title"],
+                "summary": topic["summary"],
+                "confidence": topic.get("confidence", 0),
+                "updated_at": topic.get("updated_at", ""),
+                "record_counts": rec_counts,
+                "total_records": total_records,
+                "file_exists": filepath.exists(),
+                "file_path": str(filepath),
+            })
+
+        return BrowseResult(topics=result_topics, total=len(result_topics))
+
+    def read_topic(self, filename: str) -> TopicDetailResult:
+        """Read the full rendered markdown content of a knowledge file.
+
+        Args:
+            filename: The filename of the knowledge topic (e.g. 'python_setup.md').
+
+        Returns:
+            TopicDetailResult with the markdown content.
+        """
+        from consolidation_memory.config import get_config
+
+        cfg = get_config()
+        filepath = (cfg.KNOWLEDGE_DIR / filename).resolve()
+
+        # Path traversal guard
+        if not filepath.is_relative_to(cfg.KNOWLEDGE_DIR.resolve()):
+            return TopicDetailResult(
+                status="error",
+                filename=filename,
+                message="Invalid filename: path traversal detected.",
+            )
+        if not filepath.exists():
+            return TopicDetailResult(status="not_found", filename=filename)
+
+        content = filepath.read_text(encoding="utf-8")
+        return TopicDetailResult(status="ok", filename=filename, content=content)
+
+    def timeline(self, topic: str) -> TimelineResult:
+        """Show how understanding of a topic has changed over time.
+
+        Retrieves all records (including expired) matching the topic,
+        sorted chronologically, with supersession links where a record
+        was replaced by a newer one.
+
+        Args:
+            topic: Natural language topic to query (e.g., 'frontend framework preference').
+
+        Returns:
+            TimelineResult with chronologically sorted entries.
+        """
+        from consolidation_memory.database import get_all_active_records
+        from consolidation_memory.backends import encode_query
+        import numpy as np
+
+        self._vector_store.reload_if_stale()
+
+        # Get all records including expired
+        all_records = get_all_active_records(include_expired=True)
+        if not all_records:
+            return TimelineResult(
+                query=topic, message="No knowledge records found."
+            )
+
+        # Embed the query and find relevant records by semantic similarity
+        try:
+            query_vec = encode_query(topic)
+        except ConnectionError as e:
+            return TimelineResult(
+                query=topic, message=f"Embedding backend unreachable: {e}"
+            )
+
+        # Embed record texts and compute similarity
+        from consolidation_memory.backends import encode_documents
+
+        embedding_texts = [r.get("embedding_text", "") or "" for r in all_records]
+        # Filter out records with no embedding text
+        valid_indices = [i for i, t in enumerate(embedding_texts) if t.strip()]
+        if not valid_indices:
+            return TimelineResult(
+                query=topic, message="No records with embedding text found."
+            )
+
+        valid_texts = [embedding_texts[i] for i in valid_indices]
+        try:
+            record_vecs = encode_documents(valid_texts)
+        except ConnectionError as e:
+            return TimelineResult(
+                query=topic, message=f"Embedding backend unreachable: {e}"
+            )
+
+        # Compute cosine similarities
+        query_norm = query_vec.reshape(1, -1).astype(np.float32)
+        sims = (query_norm @ record_vecs.T).flatten()
+
+        # Filter to relevant records (similarity >= 0.3)
+        threshold = 0.3
+        matching = []
+        for idx, sim in zip(valid_indices, sims):
+            if sim >= threshold:
+                matching.append((idx, float(sim)))
+
+        if not matching:
+            return TimelineResult(
+                query=topic, message="No records found matching that topic."
+            )
+
+        # Sort by matching record's creation date
+        matching.sort(key=lambda x: all_records[x[0]].get("created_at", ""))
+
+        # Build timeline entries, detect supersession
+        entries = []
+        for rec_idx, sim in matching:
+            rec = all_records[rec_idx]
+            is_expired = rec.get("valid_until") is not None and rec["valid_until"] != ""
+
+            entry = {
+                "date": rec.get("valid_from") or rec.get("created_at", ""),
+                "record_type": rec.get("record_type", ""),
+                "content": rec.get("content", {}),
+                "embedding_text": rec.get("embedding_text", ""),
+                "confidence": rec.get("confidence", 0),
+                "similarity": round(sim, 4),
+                "status": "superseded" if is_expired else "active",
+                "valid_from": rec.get("valid_from"),
+                "valid_until": rec.get("valid_until"),
+                "topic_title": rec.get("topic_title", ""),
+                "topic_filename": rec.get("topic_filename", ""),
+            }
+
+            # Try to find the superseding record
+            if is_expired:
+                expired_at = rec["valid_until"]
+                expired_text = rec.get("embedding_text", "")
+                if expired_text:
+                    expired_vec = record_vecs[valid_indices.index(rec_idx)] if rec_idx in valid_indices else None
+                    if expired_vec is not None:
+                        # Find the most similar active record created around the same time
+                        best_successor = None
+                        best_sim = 0.0
+                        for other_idx, _ in matching:
+                            other = all_records[other_idx]
+                            if other.get("valid_until"):
+                                continue  # skip other expired records
+                            other_created = other.get("created_at", "")
+                            if other_created >= (expired_at or ""):
+                                # Check embedding similarity
+                                other_vec_idx = valid_indices.index(other_idx) if other_idx in valid_indices else None
+                                if other_vec_idx is not None:
+                                    pair_sim = float(
+                                        expired_vec.reshape(1, -1) @ record_vecs[other_vec_idx].reshape(-1, 1)
+                                    )
+                                    if pair_sim > best_sim and pair_sim >= 0.5:
+                                        best_sim = pair_sim
+                                        best_successor = other.get("embedding_text", "")
+                        if best_successor:
+                            entry["superseded_by"] = best_successor
+
+            entries.append(entry)
+
+        return TimelineResult(
+            query=topic,
+            entries=entries,
+            total=len(entries),
         )
 
     def consolidate(self) -> ConsolidationReport:

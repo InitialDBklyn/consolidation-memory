@@ -201,3 +201,31 @@ class CompactResult:
     status: Literal["compacted", "no_tombstones"]
     tombstones_removed: int = 0
     index_size: int = 0
+
+
+@dataclass
+class BrowseResult:
+    """Result of browsing knowledge topics."""
+
+    topics: list[dict[str, Any]] = field(default_factory=list)
+    total: int = 0
+
+
+@dataclass
+class TopicDetailResult:
+    """Result of reading a single knowledge topic."""
+
+    status: Literal["ok", "not_found", "error"]
+    filename: str = ""
+    content: str = ""
+    message: str = ""
+
+
+@dataclass
+class TimelineResult:
+    """Result of a temporal timeline query."""
+
+    query: str = ""
+    entries: list[dict[str, Any]] = field(default_factory=list)
+    total: int = 0
+    message: str = ""
