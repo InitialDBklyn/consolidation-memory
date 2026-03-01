@@ -125,8 +125,8 @@ def _apply_cooccurrence_boost(
     # Boost episodes that have at least one connected tag
     boosted = []
     for i, (ep, score, sim) in enumerate(scored):
-        ep_tags = set(episode_tags[i])
-        if ep_tags & connected_tags:
+        ep_tag_set = set(episode_tags[i])
+        if ep_tag_set & connected_tags:
             score *= 1.10  # 10% boost
         boosted.append((ep, score, sim))
 
