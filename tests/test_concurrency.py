@@ -9,8 +9,6 @@ Run with: python -m pytest tests/test_concurrency.py -v
 import threading
 from unittest.mock import patch
 
-import numpy as np
-
 from helpers import make_normalized_vec as _make_vec
 
 

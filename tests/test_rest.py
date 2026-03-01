@@ -6,7 +6,6 @@ Requires: pip install consolidation-memory[rest,dev]
 
 from unittest.mock import patch
 
-import numpy as np
 import pytest
 
 from helpers import make_normalized_vec as _make_normalized_vec

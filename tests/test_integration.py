@@ -7,12 +7,10 @@ vector store, and client methods end-to-end.
 import json
 from unittest.mock import patch
 
-import numpy as np
 import pytest
 
 from consolidation_memory.client import MemoryClient
 from consolidation_memory.database import ensure_schema, search_episodes
-from helpers import make_normalized_vec as _make_vec
 from helpers import mock_encode as _mock_encode
 
 

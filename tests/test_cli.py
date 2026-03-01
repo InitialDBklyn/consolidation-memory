@@ -1,6 +1,5 @@
 """Tests for CLI commands, particularly `consolidation-memory test`."""
 
-import numpy as np
 import pytest
 from unittest.mock import patch, MagicMock
 

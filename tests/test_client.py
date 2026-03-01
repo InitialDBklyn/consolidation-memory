@@ -6,10 +6,7 @@ Run with: python -m pytest tests/test_client.py -v
 import json
 from unittest.mock import patch
 
-import numpy as np
-
 from helpers import make_normalized_vec as _make_normalized_vec
-from helpers import make_normalized_batch as _make_normalized_batch
 
 
 class TestClientLifecycle:
