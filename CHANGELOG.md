@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.10.0 — 2026-02-28
+
+Knowledge introspection, forgetting transparency, and adoption tooling.
+
+### Features
+
+- **LoCoMo benchmark harness** — `benchmarks/` package for comparable evaluation against Mem0/Zep/OpenAI Memory using the LoCoMo-10 dataset (token F1, BLEU-1, LLM judge scoring across 5 question categories)
+- **Knowledge browser** — `memory_browse` and `memory_read_topic` MCP tools + `browse` CLI command for inspecting consolidated knowledge topics with record counts, confidence scores, and full markdown content
+- **Temporal timeline** — `memory_timeline` MCP tool showing how understanding of a topic evolved over time, with supersession detection via embedding similarity
+- **Decay transparency** — `memory_decay_report` MCP tool previews what consolidation would prune without deleting anything
+- **Episode protection** — `memory_protect` MCP tool marks episodes or entire tags as immune to pruning; schema v7 adds `protected` column
+- **Recent activity** — `memory_status` now includes `recent_activity` field with last 5 consolidation run summaries
+- **Configurable decay policies** — `[decay_policies]` in config.toml for tag-based retention overrides (e.g., keep architecture decisions for a year, forget debugging sessions after a week)
+- **`setup-claude` CLI command** — appends recommended memory instructions to `~/.claude/CLAUDE.md` with confirmation prompt so Claude Code proactively uses memory tools
+
+### Documentation
+
+- Cross-client memory section in README explaining shared memory across Claude Code, Cursor, Windsurf, and any MCP client
+- Example MCP configs in `docs/examples/` for Claude Code, Cursor, VS Code + Continue, and generic clients
+- Recommended CLAUDE.md snippet in `docs/recommended-claude-md.md`
+- Updated README tools list and CLI table
+
 ## 0.9.0 — 2026-02-28
 
 Comprehensive code review: 30 fixes across correctness, security, performance, and code quality.
