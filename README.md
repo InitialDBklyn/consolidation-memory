@@ -1,115 +1,24 @@
-<div align="center">
-
 # consolidation-memory
 
-**Memory that gets smarter while your agent sleeps.**
+[![PyPI](https://img.shields.io/pypi/v/consolidation-memory)](https://pypi.org/project/consolidation-memory/)
+[![CI](https://img.shields.io/github/actions/workflow/status/charliee1w/consolidation-memory/test.yml?label=tests)](https://github.com/charliee1w/consolidation-memory/actions)
+[![Python](https://img.shields.io/badge/python-3.10+-blue)](https://pypi.org/project/consolidation-memory/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Most AI memory systems are glorified vector stores — they embed, they retrieve, they forget. consolidation-memory does something different: it runs a background process that clusters your raw episodes, synthesizes them through an LLM, and distills structured knowledge records — automatically, without agent intervention. Your memories don't just accumulate. They consolidate.
+Local-first persistent memory for AI agents. SQLite + FAISS, runs on a laptop, no cloud.
 
-This is the same trick your brain uses. Neuroscience calls it memory consolidation: during sleep, the hippocampus replays recent experiences and transfers distilled patterns to the neocortex for long-term storage. Raw episodes become durable knowledge. consolidation-memory applies this process to AI agents — a background thread replays stored episodes, clusters them by semantic similarity, and uses an LLM to synthesize structured knowledge records (facts, solutions, preferences) that feed back into future recall.
+Agents store episodes (conversations, facts, solutions). A background thread periodically clusters related episodes and uses a local LLM to synthesize them into structured knowledge records. Old episodes get pruned. Knowledge compounds over time instead of degrading.
 
-The result: an agent that remembers not just *what* happened, but *what it learned*.
-
-[![PyPI](https://img.shields.io/pypi/v/consolidation-memory?style=flat-square&color=1a1a2e&labelColor=0f0f1a)](https://pypi.org/project/consolidation-memory/)
-[![CI](https://img.shields.io/github/actions/workflow/status/charliee1w/consolidation-memory/test.yml?style=flat-square&label=tests&color=1a1a2e&labelColor=0f0f1a)](https://github.com/charliee1w/consolidation-memory/actions)
-[![Python](https://img.shields.io/badge/python-3.10+-1a1a2e?style=flat-square&labelColor=0f0f1a)](https://pypi.org/project/consolidation-memory/)
-[![License](https://img.shields.io/badge/license-MIT-1a1a2e?style=flat-square&labelColor=0f0f1a)](LICENSE)
-
-</div>
-
-```
-You: "My build is failing with a linker error"
-AI:  (recalls your project uses CMake + MSVC on Windows)
-     (recalls you hit the same error last month — it was a missing vcpkg dependency)
-     "Last time this happened it was a missing vcpkg package. Want me to
-      check if your vcpkg.json changed since we fixed it?"
-```
-
-This isn't retrieval. The agent never explicitly stored "this user's linker errors come from vcpkg." That knowledge was *synthesized* during consolidation from scattered episodes across multiple sessions.
-
-## Why Consolidation Matters
-
-Vector search finds what you stored. Consolidation finds what you *learned*.
-
-| | Vector store | consolidation-memory |
-|---|---|---|
-| **Store** | Embed text, save vector | Same |
-| **Recall** | Nearest-neighbor search | Semantic search + knowledge records |
-| **Over time** | Index grows, recall degrades | Background LLM distills knowledge, prunes noise |
-| **Knowledge** | Whatever you explicitly saved | Emergent — synthesized from episode clusters |
-| **Maintenance** | Manual curation or nothing | Automatic background consolidation |
-
-Without consolidation, your memory system is a write-once archive. With it, memory compounds.
-
-## Why Not X?
-
-There are good AI memory tools out there. Here's why consolidation-memory exists anyway.
-
-| | consolidation-memory | Mem0 | Zep | Letta (MemGPT) | Cognee |
-|---|---|---|---|---|---|
-| **Core mechanism** | Background LLM consolidation — clusters episodes, synthesizes knowledge records automatically | Write-time extraction — LLM extracts facts on every `add()` call | Session summaries — compresses conversation windows into summaries | Agent self-management — the LLM decides what to store in its own context | ETL pipeline — extracts, chunks, builds knowledge graph |
-| **When synthesis happens** | Background thread (async, off the hot path) | Synchronously at write time | End of session / window | During agent turns (uses agent compute) | Explicit pipeline run |
-| **Knowledge structure** | Typed records (fact, solution, preference) from episode clusters | Flat extracted facts | Session summary nodes + temporal graph | Agent-managed text blocks | Knowledge graph (nodes + edges) |
-| **Infrastructure** | SQLite + FAISS (two files) | Qdrant/Postgres + graph DB (self-hosted) or cloud API | Postgres + Neo4j (cloud) or Graphiti (Apache 2.0) | Postgres + agent runtime | Neo4j or Kuzu + vector DB |
-| **Local-first** | Yes — runs on a laptop with no network | Partial — OSS needs Qdrant | No — cloud-first, OSS community edition deprecated | Yes — but requires running agent server | Partial — needs graph DB |
-| **MCP native** | Yes | Yes (added later) | No | No | Yes (added later) |
-| **Zero config** | `pip install` + `init` | Docker compose or API key | API key + cloud setup | `pip install` + server setup | `pip install` + graph DB |
-
-**Mem0** extracts facts at write time — every `add()` call invokes the LLM to parse and store structured facts. This works, but it means your extraction quality is bounded by what the LLM can infer from a single episode in isolation. consolidation-memory's background consolidation sees *clusters* of related episodes together, letting it synthesize cross-session patterns that no single episode contains.
-
-**Zep** summarizes conversation sessions and builds a temporal knowledge graph. It's designed for chat applications with clear session boundaries. consolidation-memory operates on individual episodes from any source — it doesn't assume a chat-session structure, and its consolidation clusters by semantic similarity rather than temporal adjacency.
-
-**Letta (MemGPT)** makes the agent itself responsible for memory management — the LLM decides what to write to its core memory and archival storage during its own turns. This is elegant but uses agent compute for memory housekeeping and requires the agent to be well-prompted for self-management. consolidation-memory moves this work to a background thread that runs independently of agent sessions.
-
-**Cognee** builds knowledge graphs through an ETL-style pipeline — powerful for structured reasoning over entities and relationships, but it needs graph database infrastructure (Neo4j or Kuzu). consolidation-memory's approach is deliberately simpler: SQLite + FAISS, two files, runs on a laptop.
-
-## How It Works
-
-```mermaid
-flowchart LR
-    A["Store"] -->|episodes + embeddings| B["SQLite + FAISS"]
-    B -->|semantic search| C["Recall"]
-    C -->|priority scoring| D["Results"]
-    B -->|background thread| E["Consolidate"]
-    E -->|cluster + synthesize| F["Knowledge Records"]
-    F -->|feeds back into| B
-```
-
-1. **Store** — Save episodes (facts, solutions, preferences) with embeddings into SQLite + FAISS
-2. **Recall** — Semantic search with priority scoring (surprise, recency, access frequency)
-3. **Consolidate** — Background LLM clusters related episodes and synthesizes structured knowledge records
-
-### Consolidation Detail
-
-```mermaid
-flowchart TD
-    A["Fetch unconsolidated episodes"] --> B["Embed + cluster"]
-    B --> C{"Match existing topic?"}
-    C -->|Yes| D["Merge into topic"]
-    C -->|No| E["Create new topic"]
-    D --> F["LLM synthesizes structured records"]
-    E --> F
-    F --> G["Validate + version + write"]
-    G --> H["Prune old episodes"]
-```
-
-Runs on a background thread (default: every 6 hours). Episodes are grouped by hierarchical clustering, matched to existing knowledge topics by semantic similarity, then synthesized into structured records (facts, solutions, preferences) via LLM. Three consecutive failures trigger a circuit breaker to avoid burning through timeouts.
-
-## Quick Start
+## Install
 
 ```bash
 pip install consolidation-memory[fastembed]
 consolidation-memory init
 ```
 
-FastEmbed runs locally — no external services needed.
+FastEmbed runs locally. No API keys needed.
 
-## Integrations
-
-<details open>
-<summary><strong>MCP Server</strong></summary>
-
-Add to your MCP client config (`claude_desktop_config.json`, `.claude/settings.json`, etc.):
+## MCP Server
 
 ```json
 {
@@ -121,23 +30,9 @@ Add to your MCP client config (`claude_desktop_config.json`, `.claude/settings.j
 }
 ```
 
-| Tool | Description |
-|------|-------------|
-| `memory_store` | Save an episode (fact, solution, preference, exchange) |
-| `memory_store_batch` | Store multiple episodes in one call (single embed + FAISS batch) |
-| `memory_recall` | Semantic search over episodes + knowledge, with optional filters |
-| `memory_search` | Keyword/metadata search — works without embedding backend |
-| `memory_status` | System stats, health diagnostics, and consolidation metrics |
-| `memory_forget` | Soft-delete an episode by ID |
-| `memory_export` | Export all episodes and knowledge to a JSON snapshot |
-| `memory_correct` | Fix outdated knowledge documents with new information |
-| `memory_compact` | Rebuild FAISS index, removing tombstoned vectors |
-| `memory_consolidate` | Manually trigger a consolidation run |
+Tools: `memory_store`, `memory_store_batch`, `memory_recall`, `memory_search`, `memory_status`, `memory_forget`, `memory_export`, `memory_correct`, `memory_compact`, `memory_consolidate`
 
-</details>
-
-<details>
-<summary><strong>Python API</strong></summary>
+## Python API
 
 ```python
 from consolidation_memory import MemoryClient
@@ -148,15 +43,9 @@ with MemoryClient() as mem:
     result = mem.recall("user interface preferences")
     for ep in result.episodes:
         print(ep["content"], ep["similarity"])
-
-    stats = mem.status()
-    print(stats.health)  # {"status": "healthy", "issues": [], "backend_reachable": true}
 ```
 
-</details>
-
-<details>
-<summary><strong>OpenAI Function Calling</strong></summary>
+## OpenAI Function Calling
 
 Works with any OpenAI-compatible API (LM Studio, Ollama, OpenAI, Azure):
 
@@ -168,30 +57,33 @@ mem = MemoryClient()
 # Pass openai_tools to your chat completion, dispatch results with dispatch_tool_call()
 ```
 
-</details>
-
-<details>
-<summary><strong>REST API</strong></summary>
+## REST API
 
 ```bash
 pip install consolidation-memory[rest]
 consolidation-memory serve --rest --port 8080
 ```
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Version + status |
-| `POST` | `/memory/store` | Store episode |
-| `POST` | `/memory/store/batch` | Store multiple episodes |
-| `POST` | `/memory/recall` | Semantic search (with optional filters) |
-| `POST` | `/memory/search` | Keyword/metadata search (no embedding needed) |
-| `GET` | `/memory/status` | System statistics + consolidation metrics |
-| `DELETE` | `/memory/episodes/{id}` | Forget episode |
-| `POST` | `/memory/consolidate` | Trigger consolidation |
-| `POST` | `/memory/correct` | Correct knowledge doc |
-| `POST` | `/memory/export` | Export to JSON |
+`POST /memory/store` | `POST /memory/store/batch` | `POST /memory/recall` | `POST /memory/search` | `GET /memory/status` | `DELETE /memory/episodes/{id}` | `POST /memory/consolidate` | `POST /memory/correct` | `POST /memory/export` | `GET /health`
 
-</details>
+## How Consolidation Works
+
+```
+store episodes → SQLite + FAISS
+                      ↓
+        background thread (every 6h)
+                      ↓
+     hierarchical clustering by similarity
+                      ↓
+        LLM synthesizes knowledge records
+        (facts, solutions, preferences, procedures)
+                      ↓
+     records feed back into recall, old episodes pruned
+```
+
+Episodes are grouped by semantic similarity using agglomerative clustering. Each cluster is matched against existing knowledge topics. The LLM either creates a new topic or merges into an existing one. Output is validated, versioned, and written as structured records with their own embeddings for independent search.
+
+Three consecutive LLM failures trip a circuit breaker. Pruned episodes still count toward consolidation history.
 
 ## Backends
 
@@ -204,7 +96,7 @@ consolidation-memory serve --rest --port 8080
 | Ollama | Built-in | nomic-embed-text | Y |
 | OpenAI | `pip install consolidation-memory[openai]` | text-embedding-3-small | N |
 
-### LLM
+### LLM (for consolidation)
 
 | Backend | Requirements |
 |---------|-------------|
@@ -220,7 +112,7 @@ consolidation-memory init
 ```
 
 <details>
-<summary>Manual configuration</summary>
+<summary>Manual config</summary>
 
 | Platform | Path |
 |----------|------|
@@ -250,53 +142,18 @@ prune_after_days = 60  # default: 30
 <details>
 <summary>Environment variable overrides</summary>
 
-Every config setting can be overridden with an environment variable. The naming convention is `CONSOLIDATION_MEMORY_<FIELD_NAME>`:
+Every setting can be overridden with `CONSOLIDATION_MEMORY_<FIELD_NAME>`:
 
 ```bash
-# Embedding
 CONSOLIDATION_MEMORY_EMBEDDING_BACKEND=lmstudio
-CONSOLIDATION_MEMORY_EMBEDDING_MODEL_NAME=text-embedding-nomic-embed-text-v1.5
 CONSOLIDATION_MEMORY_EMBEDDING_DIMENSION=768
-CONSOLIDATION_MEMORY_EMBEDDING_API_BASE=http://localhost:1234/v1
-CONSOLIDATION_MEMORY_EMBEDDING_API_KEY=sk-...
-
-# LLM
 CONSOLIDATION_MEMORY_LLM_BACKEND=openai
-CONSOLIDATION_MEMORY_LLM_API_BASE=https://api.openai.com/v1
-CONSOLIDATION_MEMORY_LLM_MODEL=gpt-4o-mini
 CONSOLIDATION_MEMORY_LLM_API_KEY=sk-...
-
-# Data directory
-CONSOLIDATION_MEMORY_DATA_DIR=/data/consolidation-memory
-
-# Consolidation
 CONSOLIDATION_MEMORY_CONSOLIDATION_INTERVAL_HOURS=12
 CONSOLIDATION_MEMORY_CONSOLIDATION_AUTO_RUN=false
 ```
 
-**Priority:** defaults < TOML file < environment variables < `reset_config()` (tests).
-
-**Type coercion:** Strings are used as-is. Integers and floats are parsed. Booleans accept `1/true/yes` (true) and `0/false/no` (false). Complex types (frozenset, dict) cannot be set via env vars.
-
-**Docker example:**
-
-```bash
-docker run -e CONSOLIDATION_MEMORY_EMBEDDING_BACKEND=openai \
-           -e CONSOLIDATION_MEMORY_EMBEDDING_API_KEY=sk-... \
-           -e CONSOLIDATION_MEMORY_LLM_BACKEND=openai \
-           -e CONSOLIDATION_MEMORY_LLM_API_KEY=sk-... \
-           -e CONSOLIDATION_MEMORY_DATA_DIR=/data \
-           consolidation-memory serve
-```
-
-**CI example (GitHub Actions):**
-
-```yaml
-env:
-  CONSOLIDATION_MEMORY_EMBEDDING_BACKEND: fastembed
-  CONSOLIDATION_MEMORY_LLM_BACKEND: disabled
-  CONSOLIDATION_MEMORY_CONSOLIDATION_AUTO_RUN: "false"
-```
+Priority: defaults < TOML < env vars < `reset_config()` (tests).
 
 </details>
 
@@ -306,32 +163,26 @@ env:
 |---------|-------------|
 | `consolidation-memory serve` | Start MCP server (default) |
 | `consolidation-memory serve --rest` | Start REST API |
-| `consolidation-memory --project work serve` | Start MCP server for a specific project |
+| `consolidation-memory --project work serve` | MCP server for a specific project |
 | `consolidation-memory init` | Interactive setup |
 | `consolidation-memory status` | Show stats |
 | `consolidation-memory consolidate` | Manual consolidation |
 | `consolidation-memory export` | Export to JSON |
 | `consolidation-memory import PATH` | Import from JSON |
 | `consolidation-memory reindex` | Re-embed everything (after switching backends) |
-| `consolidation-memory test` | Run post-install verification |
-| `consolidation-memory dashboard` | Open TUI dashboard |
+| `consolidation-memory test` | Post-install verification |
+| `consolidation-memory dashboard` | TUI dashboard |
 
-## Multi-Project Support
+## Multi-Project
 
-Isolate memories per project — work memories stay in work, personal stays in personal.
+Isolate memories per project:
 
 ```bash
-# CLI flag
 consolidation-memory --project work status
-consolidation-memory --project personal serve --rest --port 8081
-
-# Environment variable
 CONSOLIDATION_MEMORY_PROJECT=work consolidation-memory serve
 ```
 
-### MCP (Claude Desktop) — Multiple Projects
-
-Add separate server entries per project:
+MCP config for multiple projects:
 
 ```json
 {
@@ -348,7 +199,7 @@ Add separate server entries per project:
 }
 ```
 
-Each project gets its own database, vector index, and knowledge files. Config and embedding/LLM backends are shared. When no project is specified, `default` is used. Existing users are auto-migrated to `projects/default/` on first run.
+Each project gets its own database, vector index, and knowledge files.
 
 ## Data Storage
 
@@ -360,23 +211,7 @@ All data stays local.
 | macOS | `~/Library/Application Support/consolidation_memory/projects/<name>/` |
 | Windows | `%LOCALAPPDATA%\consolidation_memory\projects\<name>\` |
 
-<details>
-<summary>Migrating</summary>
-
-Point your config at an existing data directory:
-
-```toml
-[paths]
-data_dir = "/path/to/your/existing/data"
-```
-
-Switching embedding backends (different dimensions)?
-
-```bash
-consolidation-memory reindex
-```
-
-</details>
+Switching embedding backends? `consolidation-memory reindex`
 
 ## Development
 
