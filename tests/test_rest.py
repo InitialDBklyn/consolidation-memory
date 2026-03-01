@@ -9,6 +9,8 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from helpers import make_normalized_vec as _make_normalized_vec
+
 try:
     from fastapi.testclient import TestClient
     HAS_FASTAPI = True
@@ -17,13 +19,6 @@ except ImportError:
 
 
 pytestmark = pytest.mark.skipif(not HAS_FASTAPI, reason="fastapi not installed")
-
-
-def _make_normalized_vec(dim=384, seed=None):
-    rng = np.random.default_rng(seed)
-    vec = rng.standard_normal(dim).astype(np.float32)
-    vec /= np.linalg.norm(vec)
-    return vec
 
 
 @pytest.fixture

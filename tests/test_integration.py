@@ -12,22 +12,8 @@ import pytest
 
 from consolidation_memory.client import MemoryClient
 from consolidation_memory.database import ensure_schema, search_episodes
-
-
-def _make_vec(dim=384, seed=None):
-    rng = np.random.default_rng(seed)
-    vec = rng.standard_normal(dim).astype(np.float32)
-    vec /= np.linalg.norm(vec)
-    return vec
-
-
-def _mock_encode(texts):
-    """Deterministic mock: hash text to seed a reproducible vector."""
-    vecs = []
-    for t in texts:
-        seed = hash(t) % (2**31)
-        vecs.append(_make_vec(seed=seed))
-    return np.array(vecs, dtype=np.float32)
+from helpers import make_normalized_vec as _make_vec
+from helpers import mock_encode as _mock_encode
 
 
 @pytest.fixture()

@@ -11,13 +11,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-
-def _make_vec(dim=384, seed=None):
-    """Generate a normalized random vector."""
-    rng = np.random.default_rng(seed)
-    vec = rng.standard_normal(dim).astype(np.float32)
-    vec /= np.linalg.norm(vec)
-    return vec
+from helpers import make_normalized_vec as _make_vec
 
 
 class TestConcurrentStore:

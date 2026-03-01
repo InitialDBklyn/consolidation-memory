@@ -467,7 +467,7 @@ def reset_config(**overrides: object) -> Config:
     After calling this, the next ``get_config()`` returns the fresh instance.
     """
     global _config_instance
-    _config_instance = _build_config({}, **overrides)
+    _config_instance = _build_config({}, _load_env=False, **overrides)
     return _config_instance
 
 

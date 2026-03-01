@@ -5,13 +5,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from consolidation_memory.database import ensure_schema
-
-
-def _make_normalized_vec(dim=384, seed=42):
-    rng = np.random.default_rng(seed)
-    vec = rng.standard_normal(dim).astype(np.float32)
-    vec /= np.linalg.norm(vec)
-    return vec
+from helpers import make_normalized_vec as _make_normalized_vec
 
 
 class TestCmdTest:

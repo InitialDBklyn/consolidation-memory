@@ -8,20 +8,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-
-
-def _make_normalized_vec(dim=384, seed=None):
-    rng = np.random.default_rng(seed)
-    vec = rng.standard_normal(dim).astype(np.float32)
-    vec /= np.linalg.norm(vec)
-    return vec
-
-
-def _make_normalized_batch(n, dim=384, seed=None):
-    rng = np.random.default_rng(seed)
-    vecs = rng.standard_normal((n, dim)).astype(np.float32)
-    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-    return vecs / norms
+from helpers import make_normalized_vec as _make_normalized_vec
+from helpers import make_normalized_batch as _make_normalized_batch
 
 
 class TestClientLifecycle:
