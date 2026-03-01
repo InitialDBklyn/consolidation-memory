@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.2 — 2026-02-28
+
+### Features
+
+- **Environment variable config overrides** — every scalar Config field can now be set via `CONSOLIDATION_MEMORY_<FIELD_NAME>` env vars, enabling Docker and CI configuration without a TOML file; priority: defaults < TOML < env vars < `reset_config()`
+
+### Internal
+
+- 292 tests (up from 281)
+
 ## 0.8.1 — 2026-02-28
 
 ### Features
