@@ -3,6 +3,7 @@
 Usage:
     consolidation-memory serve       # Start MCP server (default)
     consolidation-memory init        # Interactive first-run setup
+    consolidation-memory test        # Verify installation end-to-end
     consolidation-memory consolidate # Run consolidation manually
     consolidation-memory status      # Show system stats
     consolidation-memory export      # Export to JSON
@@ -171,6 +172,142 @@ similarity_threshold = 0.95
     }, indent=2))
 
     print("\nSetup complete. Run 'consolidation-memory serve' to start.")
+
+
+def cmd_test():
+    """Verify installation works end-to-end."""
+    import uuid
+    from consolidation_memory.config import get_config
+    from consolidation_memory.database import ensure_schema, insert_episode, soft_delete_episode
+
+    cfg = get_config()
+
+    # ANSI color support (respects NO_COLOR convention)
+    use_color = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+    if use_color:
+        GREEN, RED, YELLOW, DIM, RESET = "\033[32m", "\033[31m", "\033[33m", "\033[2m", "\033[0m"
+    else:
+        GREEN = RED = YELLOW = DIM = RESET = ""
+
+    PASS = f"{GREEN}\u2713{RESET}"
+    FAIL = f"{RED}\u2717{RESET}"
+    SKIP = f"{YELLOW}-{RESET}"
+
+    print(f"consolidation-memory v{__version__} \u2014 verifying installation\n")
+
+    checks: list[bool] = []
+    test_episode_id: str | None = None
+    forgotten = False
+    vs = None
+
+    def report(name: str, passed: bool, detail: str = "", skipped: bool = False):
+        icon = SKIP if skipped else (PASS if passed else FAIL)
+        suffix = f" {DIM}({detail}){RESET}" if detail else ""
+        print(f"  {icon} {name}{suffix}")
+        if not skipped:
+            checks.append(passed)
+
+    test_content = f"consolidation-memory-test {uuid.uuid4()}"
+
+    try:
+        # 1. Config
+        report("Config loaded", True, f"{cfg.EMBEDDING_BACKEND} / {cfg.LLM_BACKEND}")
+
+        # 2. Store test episode
+        try:
+            ensure_schema()
+            test_episode_id = insert_episode(
+                content=test_content,
+                content_type="fact",
+                tags=["_test"],
+                surprise_score=0.0,
+            )
+            report("Store test episode", True, test_episode_id[:8])
+        except Exception as e:
+            report("Store test episode", False, str(e))
+
+        # 3. Embedding backend connectivity
+        embedding = None
+        try:
+            from consolidation_memory.backends import encode_documents
+            embedding = encode_documents([test_content])
+            report("Embedding backend", True, f"{cfg.EMBEDDING_BACKEND}, {embedding.shape[1]}-dim")
+        except Exception as e:
+            report("Embedding backend", False, str(e))
+
+        # 4. Recall via semantic similarity
+        if test_episode_id and embedding is not None:
+            try:
+                from consolidation_memory.backends import encode_query
+                from consolidation_memory.vector_store import VectorStore
+                vs = VectorStore()
+                vs.add(test_episode_id, embedding[0])
+
+                query_vec = encode_query(test_content)
+                search_results = vs.search(query_vec, k=5)
+                found = {r[0]: r[1] for r in search_results}
+                if test_episode_id in found:
+                    report("Recall test episode", True, f"similarity: {found[test_episode_id]:.2f}")
+                else:
+                    report("Recall test episode", False, "not found in search results")
+            except Exception as e:
+                report("Recall test episode", False, str(e))
+        else:
+            report("Recall test episode", False, "store or embed failed", skipped=True)
+
+        # 5. Forget test episode
+        if test_episode_id:
+            try:
+                deleted = soft_delete_episode(test_episode_id)
+                if vs:
+                    vs.remove(test_episode_id)
+                forgotten = True
+                report("Forget test episode", bool(deleted))
+            except Exception as e:
+                report("Forget test episode", False, str(e))
+        else:
+            report("Forget test episode", False, "no episode to forget", skipped=True)
+
+        # 6. LLM backend connectivity
+        if cfg.LLM_BACKEND != "disabled":
+            try:
+                from consolidation_memory.backends import get_llm_backend
+                llm = get_llm_backend()
+                if llm is None:
+                    report("LLM backend", False, "returned None")
+                else:
+                    response = llm.generate("Reply with exactly: OK", "Say OK")
+                    if response and response.strip():
+                        report("LLM backend", True, f"{cfg.LLM_BACKEND}/{cfg.LLM_MODEL}")
+                    else:
+                        report("LLM backend", False, "empty response")
+            except Exception as e:
+                report("LLM backend", False, str(e))
+        else:
+            report("LLM backend", False, "disabled", skipped=True)
+
+    finally:
+        # Always clean up test episode, even if steps above failed
+        if test_episode_id and not forgotten:
+            try:
+                soft_delete_episode(test_episode_id)
+            except Exception:
+                pass
+            if vs:
+                try:
+                    vs.remove(test_episode_id)
+                except Exception:
+                    pass
+
+    # 7. Summary
+    passed = sum(checks)
+    total = len(checks)
+    print()
+    if passed == total:
+        print(f"  {GREEN}{passed}/{total} checks passed{RESET}")
+    else:
+        print(f"  {RED}{passed}/{total} checks passed{RESET}")
+        sys.exit(1)
 
 
 def cmd_consolidate():
@@ -569,6 +706,7 @@ def main():
     p_serve.add_argument("--host", default="127.0.0.1", help="REST host (default: 127.0.0.1)")
     p_serve.add_argument("--port", type=int, default=8080, help="REST port (default: 8080)")
     sub.add_parser("init", help="Interactive first-run setup")
+    sub.add_parser("test", help="Verify installation works end-to-end")
     sub.add_parser("consolidate", help="Run consolidation manually")
     sub.add_parser("status", help="Show system stats")
     sub.add_parser("export", help="Export to JSON")
@@ -587,6 +725,8 @@ def main():
         cmd_serve(args)
     elif args.command == "init":
         cmd_init()
+    elif args.command == "test":
+        cmd_test()
     elif args.command == "consolidate":
         cmd_consolidate()
     elif args.command == "status":
