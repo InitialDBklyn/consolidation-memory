@@ -6,10 +6,16 @@ Config discovery order:
   2. Platform config directory (e.g. ~/.config/consolidation_memory/config.toml)
   3. Built-in defaults
 
+After loading, every scalar Config field can be overridden by setting
+``CONSOLIDATION_MEMORY_<FIELD_NAME>`` in the environment.  For example,
+``CONSOLIDATION_MEMORY_LLM_BACKEND=openai`` overrides the LLM backend.
+Priority order: defaults < TOML < env vars < ``reset_config()`` overrides.
+
 Configuration is exposed via a ``Config`` dataclass singleton.  Call
 ``get_config()`` to obtain the current instance.  Tests should call
 ``reset_config()`` (optionally passing overrides) to get a fresh instance
-without needing ``unittest.mock.patch``.
+without needing ``unittest.mock.patch``.  ``reset_config()`` does **not**
+read env vars, keeping tests isolated.
 """
 
 from __future__ import annotations
@@ -102,6 +108,11 @@ _DEFAULT_STOPWORDS = frozenset(
 
 _KNOWN_EMBEDDING_BACKENDS = {"fastembed", "lmstudio", "openai", "ollama"}
 _KNOWN_LLM_BACKENDS = {"lmstudio", "openai", "ollama", "disabled"}
+
+_ENV_PREFIX = "CONSOLIDATION_MEMORY_"
+
+# Types eligible for env var override (primitives only)
+_ENV_COERCIBLE_TYPES = (str, int, float, bool)
 
 
 # ── Config dataclass ─────────────────────────────────────────────────────────
@@ -232,10 +243,65 @@ class Config:
         self.BACKUP_DIR = self.DATA_DIR / "backups"
 
 
-def _build_config(toml: dict | None = None, **overrides: object) -> Config:
+def _apply_env_overrides(c: Config) -> None:
+    """Override Config fields from ``CONSOLIDATION_MEMORY_*`` env vars.
+
+    Handles str, int, float, bool fields.  Skips private fields (``_``
+    prefix), ``active_project`` (handled by ``CONSOLIDATION_MEMORY_PROJECT``),
+    Path fields, and complex types (frozenset, dict).
+
+    Special case: ``CONSOLIDATION_MEMORY_DATA_DIR`` sets ``_base_data_dir``.
+    """
+    import dataclasses as _dc
+
+    # Special: DATA_DIR -> _base_data_dir (not a regular field loop candidate)
+    data_dir_env = os.environ.get(f"{_ENV_PREFIX}DATA_DIR")
+    if data_dir_env:
+        c._base_data_dir = Path(data_dir_env).expanduser().resolve()
+
+    for f in _dc.fields(c):
+        if f.name.startswith("_"):
+            continue
+        if f.name == "active_project":
+            continue  # handled by CONSOLIDATION_MEMORY_PROJECT
+
+        env_key = f"{_ENV_PREFIX}{f.name}"
+        env_val = os.environ.get(env_key)
+        if env_val is None:
+            continue
+
+        # Use the runtime type of the current value
+        field_type = type(getattr(c, f.name))
+
+        if field_type not in _ENV_COERCIBLE_TYPES:
+            continue  # skip Path, frozenset, dict, etc.
+
+        try:
+            if field_type is bool:
+                coerced: object = env_val.lower() in ("1", "true", "yes")
+            else:
+                coerced = field_type(env_val)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                f"{env_key}={env_val!r}: cannot convert to "
+                f"{field_type.__name__}: {exc}"
+            ) from exc
+
+        object.__setattr__(c, f.name, coerced)
+
+
+def _build_config(
+    toml: dict | None = None,
+    *,
+    _load_env: bool = False,
+    **overrides: object,
+) -> Config:
     """Build a Config from TOML dict + optional field overrides.
 
     This is the single place where TOML keys are mapped to Config fields.
+    When *_load_env* is True, ``CONSOLIDATION_MEMORY_*`` environment
+    variables override TOML values (but are themselves overridden by
+    explicit *overrides* kwargs, keeping tests isolated).
     """
     cfg = toml if toml is not None else {}
 
@@ -339,6 +405,10 @@ def _build_config(toml: dict | None = None, **overrides: object) -> Config:
         CIRCUIT_BREAKER_COOLDOWN=float(_cb.get("cooldown", 60.0)),
     )
 
+    # Env vars override TOML (but not test overrides)
+    if _load_env:
+        _apply_env_overrides(c)
+
     # Apply any explicit overrides (used by reset_config)
     for k, v in overrides.items():
         if hasattr(c, k):
@@ -358,7 +428,7 @@ def get_config() -> Config:
     global _config_instance
     if _config_instance is None:
         toml = _load_toml()
-        _config_instance = _build_config(toml)
+        _config_instance = _build_config(toml, _load_env=True)
         _validate_config(_config_instance)
 
         try:

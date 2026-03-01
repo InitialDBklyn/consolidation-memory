@@ -247,6 +247,59 @@ prune_after_days = 60
 
 </details>
 
+<details>
+<summary>Environment variable overrides</summary>
+
+Every config setting can be overridden with an environment variable. The naming convention is `CONSOLIDATION_MEMORY_<FIELD_NAME>`:
+
+```bash
+# Embedding
+CONSOLIDATION_MEMORY_EMBEDDING_BACKEND=lmstudio
+CONSOLIDATION_MEMORY_EMBEDDING_MODEL_NAME=text-embedding-nomic-embed-text-v1.5
+CONSOLIDATION_MEMORY_EMBEDDING_DIMENSION=768
+CONSOLIDATION_MEMORY_EMBEDDING_API_BASE=http://localhost:1234/v1
+CONSOLIDATION_MEMORY_EMBEDDING_API_KEY=sk-...
+
+# LLM
+CONSOLIDATION_MEMORY_LLM_BACKEND=openai
+CONSOLIDATION_MEMORY_LLM_API_BASE=https://api.openai.com/v1
+CONSOLIDATION_MEMORY_LLM_MODEL=gpt-4o-mini
+CONSOLIDATION_MEMORY_LLM_API_KEY=sk-...
+
+# Data directory
+CONSOLIDATION_MEMORY_DATA_DIR=/data/consolidation-memory
+
+# Consolidation
+CONSOLIDATION_MEMORY_CONSOLIDATION_INTERVAL_HOURS=12
+CONSOLIDATION_MEMORY_CONSOLIDATION_AUTO_RUN=false
+```
+
+**Priority:** defaults < TOML file < environment variables < `reset_config()` (tests).
+
+**Type coercion:** Strings are used as-is. Integers and floats are parsed. Booleans accept `1/true/yes` (true) and `0/false/no` (false). Complex types (frozenset, dict) cannot be set via env vars.
+
+**Docker example:**
+
+```bash
+docker run -e CONSOLIDATION_MEMORY_EMBEDDING_BACKEND=openai \
+           -e CONSOLIDATION_MEMORY_EMBEDDING_API_KEY=sk-... \
+           -e CONSOLIDATION_MEMORY_LLM_BACKEND=openai \
+           -e CONSOLIDATION_MEMORY_LLM_API_KEY=sk-... \
+           -e CONSOLIDATION_MEMORY_DATA_DIR=/data \
+           consolidation-memory serve
+```
+
+**CI example (GitHub Actions):**
+
+```yaml
+env:
+  CONSOLIDATION_MEMORY_EMBEDDING_BACKEND: fastembed
+  CONSOLIDATION_MEMORY_LLM_BACKEND: disabled
+  CONSOLIDATION_MEMORY_CONSOLIDATION_AUTO_RUN: "false"
+```
+
+</details>
+
 ## CLI
 
 | Command | Description |

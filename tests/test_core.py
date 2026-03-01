@@ -1217,6 +1217,86 @@ class TestConfigDefaults:
         assert cfg.CIRCUIT_BREAKER_COOLDOWN == 60.0
 
 
+class TestEnvVarOverrides:
+    """Env vars with CONSOLIDATION_MEMORY_ prefix override TOML values."""
+
+    def test_string_override(self, monkeypatch):
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_EMBEDDING_BACKEND", "lmstudio")
+        from consolidation_memory.config import _build_config
+        cfg = _build_config({}, _load_env=True)
+        assert cfg.EMBEDDING_BACKEND == "lmstudio"
+
+    def test_int_override(self, monkeypatch):
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_LLM_MAX_TOKENS", "4096")
+        from consolidation_memory.config import _build_config
+        cfg = _build_config({}, _load_env=True)
+        assert cfg.LLM_MAX_TOKENS == 4096
+
+    def test_float_override(self, monkeypatch):
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_LLM_TEMPERATURE", "0.7")
+        from consolidation_memory.config import _build_config
+        cfg = _build_config({}, _load_env=True)
+        assert cfg.LLM_TEMPERATURE == 0.7
+
+    def test_bool_true_variants(self, monkeypatch):
+        from consolidation_memory.config import _build_config
+        for val in ("1", "true", "True", "yes", "YES"):
+            monkeypatch.setenv("CONSOLIDATION_MEMORY_CONSOLIDATION_PRUNE_ENABLED", val)
+            cfg = _build_config({}, _load_env=True)
+            assert cfg.CONSOLIDATION_PRUNE_ENABLED is True, f"Failed for {val!r}"
+
+    def test_bool_false_variants(self, monkeypatch):
+        from consolidation_memory.config import _build_config
+        for val in ("0", "false", "False", "no", "NO"):
+            monkeypatch.setenv("CONSOLIDATION_MEMORY_CONSOLIDATION_PRUNE_ENABLED", val)
+            cfg = _build_config({}, _load_env=True)
+            assert cfg.CONSOLIDATION_PRUNE_ENABLED is False, f"Failed for {val!r}"
+
+    def test_data_dir_override(self, monkeypatch, tmp_path):
+        custom_dir = tmp_path / "custom_data"
+        custom_dir.mkdir()
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_DATA_DIR", str(custom_dir))
+        from consolidation_memory.config import _build_config
+        cfg = _build_config({}, _load_env=True)
+        assert cfg._base_data_dir == custom_dir
+
+    def test_env_overrides_toml(self, monkeypatch):
+        """Env var wins over TOML value."""
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_LLM_MODEL", "gpt-4")
+        from consolidation_memory.config import _build_config
+        toml = {"llm": {"model": "qwen2.5-7b-instruct"}}
+        cfg = _build_config(toml, _load_env=True)
+        assert cfg.LLM_MODEL == "gpt-4"
+
+    def test_reset_config_ignores_env(self, monkeypatch):
+        """reset_config() must not pick up env vars (test isolation)."""
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_LLM_MODEL", "gpt-4")
+        from consolidation_memory.config import reset_config
+        cfg = reset_config()
+        assert cfg.LLM_MODEL == "qwen2.5-7b-instruct"  # default, not env
+
+    def test_unknown_env_var_ignored(self, monkeypatch):
+        """Env vars that don't match a field are silently ignored."""
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_NONEXISTENT_FIELD", "value")
+        from consolidation_memory.config import _build_config
+        cfg = _build_config({}, _load_env=True)  # should not raise
+        assert not hasattr(cfg, "NONEXISTENT_FIELD")
+
+    def test_complex_fields_skipped(self, monkeypatch):
+        """frozenset and dict fields are not overridable via env."""
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_CONSOLIDATION_STOPWORDS", "foo,bar")
+        from consolidation_memory.config import _build_config
+        cfg = _build_config({}, _load_env=True)
+        # Should still have the default stopwords, not "foo,bar"
+        assert "the" in cfg.CONSOLIDATION_STOPWORDS
+
+    def test_invalid_int_raises(self, monkeypatch):
+        monkeypatch.setenv("CONSOLIDATION_MEMORY_LLM_MAX_TOKENS", "not_a_number")
+        from consolidation_memory.config import _build_config
+        with pytest.raises(ValueError, match="CONSOLIDATION_MEMORY_LLM_MAX_TOKENS"):
+            _build_config({}, _load_env=True)
+
+
 # ── Circuit breaker tests ───────────────────────────────────────────────────
 
 class TestCircuitBreaker:
