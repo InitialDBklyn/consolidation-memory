@@ -804,6 +804,20 @@ def get_contradictions(
     return [dict(r) for r in rows]
 
 
+def get_recently_contradicted_topic_ids(days: int = 30) -> set[str]:
+    """Return topic IDs that have had contradictions detected within the last N days."""
+    from datetime import timedelta
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff_str = cutoff_dt.isoformat()
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT topic_id FROM contradiction_log
+               WHERE topic_id IS NOT NULL AND detected_at >= ?""",
+            (cutoff_str,),
+        ).fetchall()
+    return {row["topic_id"] for row in rows}
+
+
 def update_tag_cooccurrence(tags: list[str]) -> None:
     """Update co-occurrence counts for all tag pairs in a set.
 

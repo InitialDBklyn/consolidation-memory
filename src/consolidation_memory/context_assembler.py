@@ -16,6 +16,7 @@ from consolidation_memory.database import (
     fts_available,
     fts_search,
     get_episodes_batch,
+    get_recently_contradicted_topic_ids,
     get_tag_pairs_in_set,
     increment_access,
     increment_record_access,
@@ -30,6 +31,11 @@ _TASK_INDICATORS: frozenset[str] = frozenset({
     "how", "workflow", "steps", "process", "deploy", "build",
     "test", "commit", "release", "setup", "configure", "run",
 })
+
+# Uncertainty signaling thresholds
+_LOW_CONFIDENCE_THRESHOLD = 0.6
+_LOW_CONFIDENCE_WARNING = "Low confidence — based on limited or conflicting information"
+_EVOLVING_TOPIC_WARNING = "Evolving — this topic has had recent contradictions"
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +258,75 @@ def _deduplicate_episodes(
         )
 
     return filtered
+
+
+# ── Uncertainty signaling ──────────────────────────────────────────────────
+
+def _apply_uncertainty_signals(
+    records: list[dict], warnings: list[str],
+) -> None:
+    """Attach uncertainty flags to low-confidence records and add aggregate warnings.
+
+    Modifies records in-place, adding an "uncertainty" field when confidence
+    is below the threshold. Also adds a warning to the warnings list if any
+    low-confidence records are present.
+    """
+    low_conf_count = 0
+    for rec in records:
+        confidence = rec.get("confidence", 0.8)
+        if confidence < _LOW_CONFIDENCE_THRESHOLD:
+            rec["uncertainty"] = _LOW_CONFIDENCE_WARNING
+            low_conf_count += 1
+
+    if low_conf_count:
+        warnings.append(
+            f"{low_conf_count} record{'s' if low_conf_count != 1 else ''} "
+            f"ha{'ve' if low_conf_count != 1 else 's'} low confidence (< {_LOW_CONFIDENCE_THRESHOLD})"
+        )
+
+
+def _apply_evolving_topic_signals(
+    topics: list[dict], warnings: list[str],
+) -> None:
+    """Flag topics with recent contradictions as "evolving".
+
+    Queries the contradiction log for topic IDs with contradictions in the
+    last 30 days and marks matching returned topics.
+    """
+    if not topics:
+        return
+
+    try:
+        contradicted_ids = get_recently_contradicted_topic_ids(days=30)
+    except (OSError, RuntimeError) as exc:
+        logger.warning("Failed to check recent contradictions: %s", exc)
+        return
+
+    if not contradicted_ids:
+        return
+
+    # We need topic IDs — look up from the knowledge_topics table via filename
+    from consolidation_memory.database import get_all_knowledge_topics
+    topic_filename_to_id: dict[str, str] = {}
+    try:
+        all_topics = get_all_knowledge_topics()
+        topic_filename_to_id = {t["filename"]: t["id"] for t in all_topics}
+    except (OSError, RuntimeError) as exc:
+        logger.warning("Failed to look up topic IDs for evolving signals: %s", exc)
+        return
+
+    evolving_count = 0
+    for topic in topics:
+        topic_id = topic_filename_to_id.get(topic.get("filename", ""))
+        if topic_id and topic_id in contradicted_ids:
+            topic["uncertainty"] = _EVOLVING_TOPIC_WARNING
+            evolving_count += 1
+
+    if evolving_count:
+        warnings.append(
+            f"{evolving_count} topic{'s' if evolving_count != 1 else ''} "
+            f"{'are' if evolving_count != 1 else 'is'} evolving (recent contradictions detected)"
+        )
 
 
 # ── Main retrieval ────────────────────────────────────────────────────────────
@@ -486,7 +561,12 @@ def _search_knowledge(
         increment_topic_access([t["filename"] for t in scored_topics])
 
     scored_topics.sort(key=lambda x: x["relevance"], reverse=True)
-    return scored_topics[:cfg.KNOWLEDGE_MAX_RESULTS], warnings
+    top_topics = scored_topics[:cfg.KNOWLEDGE_MAX_RESULTS]
+
+    # Uncertainty signaling: flag evolving topics with recent contradictions
+    _apply_evolving_topic_signals(top_topics, warnings)
+
+    return top_topics, warnings
 
 
 def _search_records(
@@ -578,4 +658,9 @@ def _search_records(
         increment_record_access([r["id"] for r in scored_records])
 
     scored_records.sort(key=lambda x: x["relevance"], reverse=True)
-    return scored_records[:cfg.RECORDS_MAX_RESULTS], warnings
+    top_records = scored_records[:cfg.RECORDS_MAX_RESULTS]
+
+    # Uncertainty signaling: flag low-confidence records
+    _apply_uncertainty_signals(top_records, warnings)
+
+    return top_records, warnings
