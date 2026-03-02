@@ -25,25 +25,20 @@ class FastEmbedEmbeddingBackend:
         logger.info("Loading FastEmbed model '%s' (first run downloads ~32MB)...", model_name)
         self._model = TextEmbedding(model_name)
         self._model_name = model_name
-        self._dim: int | None = None
+        # Probe actual dimension from model (don't rely on config fallback)
+        probe = list(self._model.embed(["dimension probe"]))
+        self._dim: int = len(probe[0])
 
     def encode_documents(self, texts: list[str]) -> np.ndarray:
         embeddings = list(self._model.embed(texts))
         vecs = np.array(embeddings, dtype=np.float32)
-        if self._dim is None:
-            self._dim = vecs.shape[1]
         return normalize_l2(vecs)
 
     def encode_query(self, text: str) -> np.ndarray:
         embeddings = list(self._model.query_embed(text))
         vecs = np.array(embeddings, dtype=np.float32)
-        if self._dim is None:
-            self._dim = vecs.shape[1]
         return normalize_l2(vecs)
 
     @property
     def dimension(self) -> int:
-        if self._dim is not None:
-            return self._dim
-        from consolidation_memory.config import get_config
-        return get_config().EMBEDDING_DIMENSION
+        return self._dim
