@@ -281,6 +281,8 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
     """Apply a single migration version inside a SAVEPOINT for atomicity."""
     if version not in MIGRATIONS:
         return
+    if not isinstance(version, int) or version < 0:
+        raise ValueError(f"Invalid migration version: {version}")
     savepoint = f"migration_v{version}"
     conn.execute(f"SAVEPOINT {savepoint}")
     try:

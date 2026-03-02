@@ -116,9 +116,9 @@ class MemoryClient:
                 )
             self._consolidation_thread = None
         if self._consolidation_pool is not None:
-            self._consolidation_pool.shutdown(wait=False)
+            self._consolidation_pool.shutdown(wait=True, cancel_futures=True)
             self._consolidation_pool = None
-        self._llm_executor.shutdown(wait=False)
+        self._llm_executor.shutdown(wait=True, cancel_futures=True)
 
     def __enter__(self) -> MemoryClient:
         return self
@@ -203,7 +203,7 @@ class MemoryClient:
             logger.error("FAISS add failed for %s, rolled back DB insert: %s", episode_id, e)
             raise
 
-        # Update tag co-occurrence graph
+        # Tag co-occurrence is non-critical — log and continue on failure
         if tags and len(tags) >= 2:
             from consolidation_memory.database import update_tag_cooccurrence
             try:
