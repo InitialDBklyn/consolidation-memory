@@ -48,6 +48,7 @@ docs/plans/
 .claude/ROADMAP.md
 .claude/PROMPTING-GUIDE.md
 .claude/settings.local.json
+.claude/prompts/
 
 # Temporary output files
 ruff_output.txt
