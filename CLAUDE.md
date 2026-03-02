@@ -8,7 +8,7 @@ Local-first persistent memory for AI agents — store, recall, and consolidate k
 src/consolidation_memory/
 ├── server.py              MCP server (primary interface)
 ├── client.py              MemoryClient API + MCP tool dispatch
-├── database.py            SQLite (schema v7, WAL mode)
+├── database.py            SQLite (schema v9, WAL mode)
 ├── vector_store.py        FAISS index (flat → IVF auto-migration at 10K vectors)
 ├── config.py              Singleton Config dataclass, TOML + env var loading
 ├── context_assembler.py   Retrieval pipeline (FAISS ANN + priority scoring)
@@ -43,7 +43,7 @@ pip install -e ".[all,dev]"
 python -m pytest tests/ -v
 ```
 
-Run the full suite before any commit. All 320+ tests must pass.
+Run the full suite before any commit. All 379+ tests must pass.
 
 ### Linting
 
@@ -108,10 +108,19 @@ Release when a meaningful milestone lands — a feature, a noteworthy bug fix, o
 - Commit messages: descriptive, present tense
 - Release commits: `vX.Y.Z` or `vX.Y.Z: short description`
 
+## Roadmap
+
+See `docs/ROADMAP.md` for the full implementation roadmap.
+**Current focus: Phase 2 (Recall Quality Leap).**
+
+When asked to "continue the roadmap", read that file and implement the next
+incomplete item. Commit after each feature. Run the full test suite before committing.
+
 ## Key Files to Know
 
 - `pyproject.toml` — version (single source of truth), all deps and tool config
 - `CHANGELOG.md` — full release history from v0.1.0
 - `docs/ARCHITECTURE.md` — detailed architecture with Mermaid diagrams
+- `docs/ROADMAP.md` — project roadmap and implementation priorities
 - `tests/conftest.py` — test isolation setup (temp dirs, config reset, cache clearing)
 - `scripts/release.py` — automated release script
