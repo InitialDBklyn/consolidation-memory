@@ -358,6 +358,10 @@ def _search_knowledge(
 
         relevance = sem_score * cfg.KNOWLEDGE_SEMANTIC_WEIGHT + kw_score * cfg.KNOWLEDGE_KEYWORD_WEIGHT
 
+        # Confidence-aware ranking: higher-confidence topics score higher
+        topic_confidence = topic.get("confidence", 0.8)
+        relevance *= 0.5 + 0.5 * topic_confidence
+
         if relevance < cfg.KNOWLEDGE_RELEVANCE_THRESHOLD:
             continue
 
@@ -432,6 +436,11 @@ def _search_records(
         # Boost procedure records for task-oriented queries
         if _is_task_query and rec.get("record_type") == "procedure":
             relevance *= 1.15
+
+        # Confidence-aware ranking: higher-confidence records score higher
+        # 0.5 confidence → 0.75x, 0.8 → 0.9x, 1.0 → 1.0x
+        confidence = rec.get("confidence", 0.8)
+        relevance *= 0.5 + 0.5 * confidence
 
         if relevance < cfg.RECORDS_RELEVANCE_THRESHOLD:
             continue
