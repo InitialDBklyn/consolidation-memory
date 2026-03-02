@@ -30,6 +30,7 @@ class TestSchemaStructure:
             "memory_browse",
             "memory_read_topic",
             "memory_decay_report",
+            "memory_consolidation_log",
         }
 
     def test_schemas_have_required_fields(self):

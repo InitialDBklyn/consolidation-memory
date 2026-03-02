@@ -1044,7 +1044,8 @@ def get_recent_consolidation_runs(limit: int = 5) -> list[dict[str, Any]]:
         rows = conn.execute(
             """SELECT id, started_at, completed_at, status,
                       episodes_processed, clusters_formed,
-                      topics_created, topics_updated, episodes_pruned
+                      topics_created, topics_updated, episodes_pruned,
+                      error_message
                FROM consolidation_runs
                ORDER BY started_at DESC LIMIT ?""",
             (limit,),

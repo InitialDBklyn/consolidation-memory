@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from consolidation_memory import __version__
 from consolidation_memory.types import (
     ContentType,
+    ConsolidationLogResult,
     ConsolidationReport,
     ContradictionResult,
     HealthStatus,
@@ -997,6 +998,94 @@ class MemoryClient:
             contradictions=rows,
             total=len(rows),
             topic=topic,
+        )
+
+    def consolidation_log(self, last_n: int = 5) -> ConsolidationLogResult:
+        """Show recent consolidation activity as a human-readable changelog.
+
+        Returns a summary of recent consolidation runs including topics
+        created/updated, contradictions detected, and episodes pruned.
+
+        Args:
+            last_n: Number of recent runs to include (default 5, max 20).
+
+        Returns:
+            ConsolidationLogResult with formatted changelog entries.
+        """
+        from consolidation_memory.database import (
+            get_recent_consolidation_runs,
+            get_contradictions as db_get_contradictions,
+        )
+
+        last_n = min(max(1, last_n), 20)
+        runs = get_recent_consolidation_runs(limit=last_n)
+
+        if not runs:
+            return ConsolidationLogResult(
+                entries=[], total=0,
+                message="No consolidation runs yet.",
+            )
+
+        # Get recent contradictions for cross-referencing
+        contradictions = db_get_contradictions(limit=100)
+
+        entries = []
+        for run in runs:
+            started = run.get("started_at", "")
+            status = run.get("status", "unknown")
+
+            # Count contradictions detected during this run's time window
+            run_contradictions = 0
+            completed = run.get("completed_at", "")
+            if started and completed:
+                run_contradictions = sum(
+                    1 for c in contradictions
+                    if started <= c.get("detected_at", "") <= completed
+                )
+
+            # Build human-readable summary
+            parts = []
+            tc = run.get("topics_created", 0)
+            tu = run.get("topics_updated", 0)
+            ep = run.get("episodes_processed", 0)
+            pr = run.get("episodes_pruned", 0)
+
+            if tc:
+                parts.append(f"created {tc} topic{'s' if tc != 1 else ''}")
+            if tu:
+                parts.append(f"updated {tu} topic{'s' if tu != 1 else ''}")
+            if run_contradictions:
+                parts.append(
+                    f"detected {run_contradictions} "
+                    f"contradiction{'s' if run_contradictions != 1 else ''}"
+                )
+            if pr:
+                parts.append(f"pruned {pr} episode{'s' if pr != 1 else ''}")
+            if ep and not parts:
+                parts.append(f"processed {ep} episode{'s' if ep != 1 else ''}")
+
+            summary = ", ".join(parts) if parts else "no changes"
+            if status == "failed":
+                summary = f"FAILED — {run.get('error_message') or 'unknown error'}"
+            else:
+                summary = summary[0].upper() + summary[1:] if summary else summary
+
+            entries.append({
+                "run_id": run.get("id", ""),
+                "started_at": started,
+                "completed_at": completed,
+                "status": status,
+                "summary": summary,
+                "topics_created": tc,
+                "topics_updated": tu,
+                "episodes_processed": ep,
+                "episodes_pruned": pr,
+                "contradictions_detected": run_contradictions,
+            })
+
+        return ConsolidationLogResult(
+            entries=entries,
+            total=len(entries),
         )
 
     def decay_report(self) -> DecayReportResult:

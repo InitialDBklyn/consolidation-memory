@@ -258,3 +258,12 @@ class ContradictionResult:
     contradictions: list[dict[str, Any]] = field(default_factory=list)
     total: int = 0
     topic: str | None = None
+
+
+@dataclass
+class ConsolidationLogResult:
+    """Result of querying the consolidation changelog."""
+
+    entries: list[dict[str, Any]] = field(default_factory=list)
+    total: int = 0
+    message: str = ""

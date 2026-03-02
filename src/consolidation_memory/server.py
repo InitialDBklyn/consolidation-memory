@@ -277,6 +277,23 @@ async def memory_consolidate() -> str:
 
 
 @mcp.tool()
+async def memory_consolidation_log(last_n: int = 5) -> str:
+    """Show recent consolidation activity as a human-readable changelog.
+
+    Returns summaries of recent consolidation runs: topics created/updated,
+    contradictions detected, episodes pruned. Use this to understand what
+    the memory system has been doing and how knowledge has changed.
+
+    Args:
+        last_n: Number of recent runs to show (1-20, default 5).
+    """
+    if _client is None:
+        return json.dumps({"error": "Memory system not initialized"})
+    result = await asyncio.to_thread(_client.consolidation_log, last_n)
+    return json.dumps(dataclasses.asdict(result), default=str)
+
+
+@mcp.tool()
 async def memory_decay_report() -> str:
     """Show what would be forgotten if pruning ran right now.
 

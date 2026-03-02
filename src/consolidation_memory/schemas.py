@@ -478,6 +478,29 @@ MEMORY_DECAY_REPORT_SCHEMA: dict[str, Any] = {
     },
 }
 
+MEMORY_CONSOLIDATION_LOG_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_consolidation_log",
+        "description": (
+            "Show recent consolidation activity as a human-readable changelog. "
+            "Returns summaries of recent runs: topics created/updated, "
+            "contradictions detected, episodes pruned."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "last_n": {
+                    "type": "integer",
+                    "description": "Number of recent runs to show (1-20, default 5).",
+                    "default": 5,
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
 # Convenience list of all tool schemas
 openai_tools: list[dict[str, Any]] = [
     MEMORY_STORE_SCHEMA,
@@ -496,6 +519,7 @@ openai_tools: list[dict[str, Any]] = [
     MEMORY_BROWSE_SCHEMA,
     MEMORY_READ_TOPIC_SCHEMA,
     MEMORY_DECAY_REPORT_SCHEMA,
+    MEMORY_CONSOLIDATION_LOG_SCHEMA,
 ]
 
 
@@ -620,6 +644,12 @@ def dispatch_tool_call(
     elif name == "memory_decay_report":
         decay_report_result = client.decay_report()
         return dataclasses.asdict(decay_report_result)
+
+    elif name == "memory_consolidation_log":
+        log_result = client.consolidation_log(
+            last_n=arguments.get("last_n", 5),
+        )
+        return dataclasses.asdict(log_result)
 
     else:
         raise ValueError(f"Unknown tool: {name}")
