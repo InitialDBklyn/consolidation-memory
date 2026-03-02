@@ -167,8 +167,6 @@ class TestCacheVersionRace:
         assert vecs.shape[0] == 5
 
         # Now set up: embed will be slow, and we invalidate mid-fetch
-        original_embed = mock_embed.side_effect
-
         def slow_embed(texts):
             # Invalidate while "embedding" is in progress
             topic_cache.invalidate()
