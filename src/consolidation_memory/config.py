@@ -215,6 +215,12 @@ class Config:
     RECALL_DEFAULT_N: int = 10
     RECALL_MAX_N: int = 50
 
+    # ── Hybrid search (BM25 + semantic) ─────────────────────────────────
+    HYBRID_SEARCH_ENABLED: bool = True
+    HYBRID_SEMANTIC_WEIGHT: float = 0.7
+    HYBRID_KEYWORD_WEIGHT: float = 0.3
+    HYBRID_FTS_CANDIDATES: int = 50
+
     # ── Retrieval tuning ─────────────────────────────────────────────────
     RECENCY_HALF_LIFE_DAYS: float = 90.0
     KNOWLEDGE_SEMANTIC_WEIGHT: float = 0.8
@@ -425,6 +431,11 @@ def _build_config(
         # Recall
         RECALL_DEFAULT_N=int(_recall.get("default_n", 10)),
         RECALL_MAX_N=int(_recall.get("max_n", 50)),
+        # Hybrid search
+        HYBRID_SEARCH_ENABLED=bool(_retrieval.get("hybrid_search_enabled", True)),
+        HYBRID_SEMANTIC_WEIGHT=float(_retrieval.get("hybrid_semantic_weight", 0.7)),
+        HYBRID_KEYWORD_WEIGHT=float(_retrieval.get("hybrid_keyword_weight", 0.3)),
+        HYBRID_FTS_CANDIDATES=int(_retrieval.get("hybrid_fts_candidates", 50)),
         # Retrieval
         RECENCY_HALF_LIFE_DAYS=float(_retrieval.get("recency_half_life_days", 90.0)),
         KNOWLEDGE_SEMANTIC_WEIGHT=float(_retrieval.get("knowledge_semantic_weight", 0.8)),

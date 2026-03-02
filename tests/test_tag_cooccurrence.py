@@ -221,9 +221,9 @@ class TestCooccurrenceBoostInRecall:
                      "created_at": "2026-01-01", "access_count": 0}
 
         scored = [
-            (ep_diet, 0.8, 0.8),      # has "diet" - co-occurs with "exercise"
-            (ep_exercise, 0.7, 0.7),   # has "exercise" - co-occurs with "diet"
-            (ep_python, 0.75, 0.75),   # has "python" - no co-occurrence
+            (ep_diet, 0.8, 0.8, 0.0),      # has "diet" - co-occurs with "exercise"
+            (ep_exercise, 0.7, 0.7, 0.0),   # has "exercise" - co-occurs with "diet"
+            (ep_python, 0.75, 0.75, 0.0),   # has "python" - no co-occurrence
         ]
 
         boosted = _apply_cooccurrence_boost(scored)
@@ -242,7 +242,7 @@ class TestCooccurrenceBoostInRecall:
         ep_a = {"id": "1", "tags": '["a"]'}
         ep_b = {"id": "2", "tags": '["b"]'}
 
-        scored = [(ep_a, 0.8, 0.8), (ep_b, 0.7, 0.7)]
+        scored = [(ep_a, 0.8, 0.8, 0.0), (ep_b, 0.7, 0.7, 0.0)]
         boosted = _apply_cooccurrence_boost(scored)
 
         assert boosted[0][1] == 0.8
@@ -260,7 +260,7 @@ class TestCooccurrenceBoostInRecall:
         # _apply_cooccurrence_boost only called when len(scored) >= 2
         # but let's test with 2 where only one has co-occurring tags
         ep2 = {"id": "2", "tags": '[]'}
-        scored = [(ep, 0.8, 0.8), (ep2, 0.5, 0.5)]
+        scored = [(ep, 0.8, 0.8, 0.0), (ep2, 0.5, 0.5, 0.0)]
         boosted = _apply_cooccurrence_boost(scored)
 
         # Only "diet" is in co-occurrence, but there's no matching partner

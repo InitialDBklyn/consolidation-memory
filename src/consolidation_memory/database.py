@@ -6,6 +6,8 @@ Includes schema versioning with automatic migration.
 """
 
 import json
+import logging
+import re
 import sqlite3
 import threading
 import uuid
@@ -17,13 +19,19 @@ from typing import Any
 from consolidation_memory.config import get_config as _get_config
 from consolidation_memory.types import StatsDict
 
+logger = logging.getLogger(__name__)
+
 _local = threading.local()
 _all_connections: list[sqlite3.Connection] = []  # Track all thread-local connections for cleanup
 _conn_list_lock = threading.Lock()
 
+# Cached FTS5 availability flag (None = not yet checked)
+_fts5_available: bool | None = None
+_fts5_lock = threading.Lock()
+
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 9
+CURRENT_SCHEMA_VERSION = 10
 
 # Future migrations go here: version -> list of SQL statements
 MIGRATIONS: dict[int, list[str]] = {
@@ -104,6 +112,10 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_cooccurrence_tag_a ON tag_cooccurrence(tag_a)",
         "CREATE INDEX IF NOT EXISTS idx_cooccurrence_tag_b ON tag_cooccurrence(tag_b)",
     ],
+    # Migration 10 is applied specially in _apply_migration() because FTS5
+    # may not be available in all SQLite builds.  The SQL list here is empty;
+    # the real work happens in _apply_fts5_migration().
+    10: [],
 }
 
 
@@ -147,6 +159,8 @@ def close_all_connections() -> None:
         _all_connections.clear()
     # Also clear this thread's cached reference
     _local.conn = None
+    # Reset FTS5 availability cache (new DB may or may not have FTS5)
+    _reset_fts5_cache()
 
 
 @contextmanager
@@ -272,10 +286,32 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
     try:
         for sql in MIGRATIONS[version]:
             conn.execute(sql)
+        # FTS5 migration — may fail if FTS5 extension is not compiled in
+        if version == 10:
+            _apply_fts5_migration(conn)
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")
     except Exception:
         conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        if version == 10:
+            # FTS5 unavailable — log and continue, recall degrades gracefully
+            logger.warning("FTS5 not available, hybrid search will be disabled")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            return
         raise
+
+
+def _apply_fts5_migration(conn: sqlite3.Connection) -> None:
+    """Create FTS5 virtual table and backfill from existing episodes."""
+    conn.execute(
+        """CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
+            episode_id UNINDEXED,
+            content
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO episodes_fts(episode_id, content)
+           SELECT id, content FROM episodes WHERE deleted = 0"""
+    )
 
 
 # ── Episode CRUD ─────────────────────────────────────────────────────────────
@@ -300,6 +336,7 @@ def insert_episode(
             (episode_id, now, now, content, content_type,
              json.dumps(tags or []), surprise_score, source_session),
         )
+    fts_insert(episode_id, content)
     return episode_id
 
 
@@ -381,7 +418,10 @@ def soft_delete_episode(episode_id: str) -> bool:
             "UPDATE episodes SET deleted = 1, updated_at = ? WHERE id = ? AND deleted = 0",
             (_now(), episode_id),
         )
-    return bool(cursor.rowcount and cursor.rowcount > 0)
+    deleted = bool(cursor.rowcount and cursor.rowcount > 0)
+    if deleted:
+        fts_delete(episode_id)
+    return deleted
 
 
 def hard_delete_episode(episode_id: str) -> bool:
@@ -394,7 +434,123 @@ def hard_delete_episode(episode_id: str) -> bool:
         cursor = conn.execute(
             "DELETE FROM episodes WHERE id = ?", (episode_id,)
         )
-    return bool(cursor.rowcount and cursor.rowcount > 0)
+    deleted = bool(cursor.rowcount and cursor.rowcount > 0)
+    if deleted:
+        fts_delete(episode_id)
+    return deleted
+
+
+# ── FTS5 Full-Text Search ─────────────────────────────────────────────────
+
+def fts_available() -> bool:
+    """Check if the FTS5 virtual table exists. Result is cached."""
+    global _fts5_available
+    if _fts5_available is not None:
+        return _fts5_available
+    with _fts5_lock:
+        if _fts5_available is not None:
+            return _fts5_available
+        try:
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='episodes_fts'"
+                ).fetchone()
+                _fts5_available = row is not None
+        except Exception:
+            _fts5_available = False
+    return _fts5_available
+
+
+def _reset_fts5_cache() -> None:
+    """Reset the FTS5 availability cache. Used by tests."""
+    global _fts5_available
+    with _fts5_lock:
+        _fts5_available = None
+
+
+def fts_insert(episode_id: str, content: str) -> None:
+    """Insert an episode into the FTS5 index."""
+    if not fts_available():
+        return
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO episodes_fts(episode_id, content) VALUES (?, ?)",
+                (episode_id, content),
+            )
+    except Exception as e:
+        logger.warning("FTS5 insert failed for %s: %s", episode_id, e)
+
+
+def fts_delete(episode_id: str) -> None:
+    """Delete an episode from the FTS5 index."""
+    if not fts_available():
+        return
+    try:
+        with get_connection() as conn:
+            conn.execute(
+                "DELETE FROM episodes_fts WHERE episode_id = ?",
+                (episode_id,),
+            )
+    except Exception as e:
+        logger.warning("FTS5 delete failed for %s: %s", episode_id, e)
+
+
+def _sanitize_fts_query(query: str) -> str:
+    """Sanitize a query for FTS5 MATCH.
+
+    Splits into terms, strips non-word characters, drops single-char tokens,
+    joins with OR so documents matching any term are returned.
+    """
+    terms = re.findall(r'\w+', query)
+    terms = [t for t in terms if len(t) > 1]
+    if not terms:
+        return ""
+    return " OR ".join(terms)
+
+
+def fts_search(query: str, limit: int = 50) -> list[tuple[str, float]]:
+    """BM25 keyword search over episodes.
+
+    Returns list of (episode_id, normalized_bm25_score) sorted by relevance.
+    Normalization: score = raw / (raw + 1.0) where raw = -bm25().
+    """
+    if not fts_available():
+        return []
+    sanitized = _sanitize_fts_query(query)
+    if not sanitized:
+        return []
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """SELECT episode_id, bm25(episodes_fts) as rank
+                   FROM episodes_fts
+                   WHERE episodes_fts MATCH ?
+                   ORDER BY rank
+                   LIMIT ?""",
+                (sanitized, limit),
+            ).fetchall()
+        results = []
+        for row in rows:
+            raw = -row["rank"]  # bm25() returns negative values; negate for positive
+            normalized = raw / (raw + 1.0) if raw > 0 else 0.0
+            results.append((row["episode_id"], normalized))
+        return results
+    except Exception as e:
+        logger.warning("FTS5 search failed: %s", e)
+        return []
+
+
+def fts_rebuild() -> None:
+    """Rebuild the FTS5 index from the episodes table."""
+    if not fts_available():
+        return
+    with get_connection() as conn:
+        conn.execute("DELETE FROM episodes_fts")
+        conn.execute(
+            """INSERT INTO episodes_fts(episode_id, content)
+               SELECT id, content FROM episodes WHERE deleted = 0"""
+        )
 
 
 def get_prunable_episodes(days: int = 30) -> list[dict[str, Any]]:

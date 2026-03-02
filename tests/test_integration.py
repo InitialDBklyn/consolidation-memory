@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from consolidation_memory.client import MemoryClient
-from consolidation_memory.database import ensure_schema, search_episodes
+from consolidation_memory.database import ensure_schema, fts_search, search_episodes
 from helpers import mock_encode as _mock_encode
 
 
@@ -222,3 +222,23 @@ class TestExport:
         assert "episodes" in data
         assert "knowledge_topics" in data
         assert data["stats"]["episode_count"] >= 1
+
+
+# ── Hybrid Search Integration ────────────────────────────────────────────────
+
+class TestHybridRecall:
+    def test_specific_term_ranks_high(self, client):
+        """Episode with a specific term should rank high when recalled by that term."""
+        client.store("Fix the CORS bug in AuthService", content_type="solution", tags=["cors"])
+        client.store("General auth token refresh logic", content_type="solution", tags=["auth"])
+        client.store("Database migration for users table", content_type="fact", tags=["db"])
+
+        result = client.recall("CORS AuthService")
+        assert len(result.episodes) >= 1
+        # CORS episode should be in the results (boosted by FTS5)
+        contents = [ep["content"] for ep in result.episodes]
+        assert any("CORS" in c for c in contents)
+
+        # Also verify it's in the FTS index directly
+        fts_results = fts_search("CORS AuthService")
+        assert len(fts_results) >= 1

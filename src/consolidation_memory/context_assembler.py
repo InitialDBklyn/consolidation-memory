@@ -13,6 +13,8 @@ import numpy as np
 
 from consolidation_memory.config import get_config
 from consolidation_memory.database import (
+    fts_available,
+    fts_search,
     get_episodes_batch,
     get_tag_pairs_in_set,
     increment_access,
@@ -87,8 +89,8 @@ def _priority_score(similarity: float, episode: dict) -> float:
 
 
 def _apply_cooccurrence_boost(
-    scored: list[tuple[dict, float, float]],
-) -> list[tuple[dict, float, float]]:
+    scored: list[tuple[dict, float, float, float]],
+) -> list[tuple[dict, float, float, float]]:
     """Boost scores for episodes whose tags co-occur with those of other candidates.
 
     Queries the tag_cooccurrence table for pairs where both tags appear among the
@@ -99,7 +101,7 @@ def _apply_cooccurrence_boost(
     # Collect all tags across candidates
     all_tags: set[str] = set()
     episode_tags: list[list[str]] = []
-    for ep, _, _ in scored:
+    for ep, _, _, _ in scored:
         ep_tags = _parse_tags(ep.get("tags", "[]"))
         episode_tags.append(ep_tags)
         all_tags.update(ep_tags)
@@ -124,11 +126,11 @@ def _apply_cooccurrence_boost(
 
     # Boost episodes that have at least one connected tag
     boosted = []
-    for i, (ep, score, sim) in enumerate(scored):
+    for i, (ep, score, sim, bm25) in enumerate(scored):
         ep_tag_set = set(episode_tags[i])
         if ep_tag_set & connected_tags:
             score *= 1.10  # 10% boost
-        boosted.append((ep, score, sim))
+        boosted.append((ep, score, sim, bm25))
 
     return boosted
 
@@ -156,7 +158,8 @@ def recall(
         before: Only return episodes created before this ISO date string.
         include_expired: If True, include temporally expired knowledge records.
     """
-    n_results = min(n_results, get_config().RECALL_MAX_N)
+    cfg = get_config()
+    n_results = min(n_results, cfg.RECALL_MAX_N)
 
     # Fetch more candidates when filtering, since many will be discarded
     fetch_k = n_results * 5 if (content_types or tags or after or before) else n_results * 3
@@ -166,22 +169,41 @@ def recall(
         raise RuntimeError("vector_store is required for recall")
     candidates = vector_store.search(query_vec, k=fetch_k)
 
+    # Build cosine similarity map from FAISS results
+    cosine_map: dict[str, float] = {eid: sim for eid, sim in candidates}
+
+    # FTS5 keyword search (hybrid)
+    bm25_map: dict[str, float] = {}
+    _hybrid = cfg.HYBRID_SEARCH_ENABLED and fts_available()
+    if _hybrid:
+        fts_results = fts_search(query, limit=cfg.HYBRID_FTS_CANDIDATES)
+        bm25_map = {eid: score for eid, score in fts_results}
+
+    # Merge candidate IDs from both sources
+    all_candidate_ids = list(dict.fromkeys(
+        [eid for eid, _ in candidates] + list(bm25_map.keys())
+    ))
+
     logger.debug(
-        "recall: query_len=%d, n_results=%d, vector_candidates=%d, filters=%s",
-        len(query), n_results, len(candidates),
+        "recall: query_len=%d, n_results=%d, vector_candidates=%d, "
+        "fts_candidates=%d, merged=%d, filters=%s",
+        len(query), n_results, len(candidates), len(bm25_map),
+        len(all_candidate_ids),
         {"content_types": content_types, "tags": tags, "after": after, "before": before},
     )
 
     # Batch-fetch all candidate episodes in one query instead of N individual SELECTs
-    candidate_ids = [eid for eid, _ in candidates]
-    episodes_by_id = get_episodes_batch(candidate_ids)
+    episodes_by_id = get_episodes_batch(all_candidate_ids)
 
     # Precompute filter sets
     _ct_set = set(content_types) if content_types else None
     _tag_set = set(tags) if tags else None
 
+    sem_w = cfg.HYBRID_SEMANTIC_WEIGHT if _hybrid else 1.0
+    kw_w = cfg.HYBRID_KEYWORD_WEIGHT if _hybrid else 0.0
+
     scored = []
-    for episode_id, similarity in candidates:
+    for episode_id in all_candidate_ids:
         ep = episodes_by_id.get(episode_id)
         if ep is None:
             continue
@@ -198,8 +220,12 @@ def recall(
         if before and ep["created_at"] > before:
             continue
 
-        score = _priority_score(similarity, ep)
-        scored.append((ep, score, similarity))
+        cosine_sim = cosine_map.get(episode_id, 0.0)
+        bm25_norm = bm25_map.get(episode_id, 0.0)
+        hybrid_sim = sem_w * cosine_sim + kw_w * bm25_norm
+
+        score = _priority_score(hybrid_sim, ep)
+        scored.append((ep, score, cosine_sim, bm25_norm))
 
     logger.debug(
         "recall: db_matches=%d, scored_after_priority=%d",
@@ -215,9 +241,9 @@ def recall(
     top = scored[:n_results]
 
     episodes = []
-    for ep, score, sim in top:
+    for ep, score, sim, bm25 in top:
         ep_parsed_tags = _parse_tags(ep["tags"])
-        episodes.append({
+        entry: dict[str, object] = {
             "id": ep["id"],
             "content": ep["content"],
             "content_type": ep["content_type"],
@@ -226,9 +252,12 @@ def recall(
             "score": round(score, 4),
             "similarity": round(sim, 4),
             "access_count": ep["access_count"],
-        })
+        }
+        if _hybrid:
+            entry["bm25_score"] = round(bm25, 4)
+        episodes.append(entry)
 
-    accessed_ids = [ep["id"] for ep, _, _ in top]
+    accessed_ids = [ep["id"] for ep, _, _, _ in top]
     increment_access(accessed_ids)
 
     knowledge: list[dict] = []
