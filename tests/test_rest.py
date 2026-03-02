@@ -102,6 +102,33 @@ class TestForgetEndpoint:
         assert resp.status_code == 404
 
 
+class TestBatchStoreEndpoint:
+    @patch("consolidation_memory.backends.encode_documents")
+    def test_batch_store(self, mock_embed, api_client):
+        from helpers import make_normalized_batch
+        mock_embed.return_value = make_normalized_batch(2, seed=42)
+
+        resp = api_client.post("/memory/store/batch", json={
+            "episodes": [
+                {"content": "Episode 1", "content_type": "fact"},
+                {"content": "Episode 2", "tags": ["test"]},
+            ]
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "stored"
+        assert data["stored"] == 2
+
+    def test_batch_store_malformed_episode(self, api_client):
+        """Missing required 'content' field should return 422, not 500."""
+        resp = api_client.post("/memory/store/batch", json={
+            "episodes": [
+                {"content_type": "fact", "tags": ["no-content"]},
+            ]
+        })
+        assert resp.status_code == 422
+
+
 class TestExportEndpoint:
     def test_export(self, api_client):
         resp = api_client.post("/memory/export")

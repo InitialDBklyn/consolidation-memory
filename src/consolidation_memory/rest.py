@@ -52,8 +52,15 @@ class RecallRequest(BaseModel):
     before: str | None = None
 
 
+class EpisodeInput(BaseModel):
+    content: str
+    content_type: str = "exchange"
+    tags: list[str] | None = None
+    surprise: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
 class BatchStoreRequest(BaseModel):
-    episodes: list[dict]
+    episodes: list[EpisodeInput]
 
 
 class SearchRequest(BaseModel):
@@ -137,7 +144,8 @@ def create_app() -> FastAPI:
     @app.post("/memory/store/batch")
     async def store_batch(req: BatchStoreRequest):
         """Store multiple memory episodes in a single operation."""
-        result = _require_client().store_batch(episodes=req.episodes)
+        episodes = [ep.model_dump() for ep in req.episodes]
+        result = _require_client().store_batch(episodes=episodes)
         return dataclasses.asdict(result)
 
     @app.post("/memory/recall")
