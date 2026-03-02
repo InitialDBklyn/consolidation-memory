@@ -135,6 +135,85 @@ def _apply_cooccurrence_boost(
     return boosted
 
 
+# ── Source traceability ───────────────────────────────────────────────────────
+
+def _format_source_dates(dates: list[str]) -> str:
+    """Format a list of ISO date strings into a human-readable summary.
+
+    Returns e.g. "Based on 2 conversations (Jan 15, Feb 3, 2025)"
+    """
+    if not dates:
+        return ""
+
+    parsed: list[datetime] = []
+    for d in dates:
+        try:
+            dt = datetime.fromisoformat(d)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            parsed.append(dt)
+        except (ValueError, TypeError):
+            continue
+
+    if not parsed:
+        return ""
+
+    parsed.sort()
+
+    # Format dates — use "Mon DD" for same year, "Mon DD, YYYY" otherwise
+    now_year = datetime.now(timezone.utc).year
+    formatted: list[str] = []
+    seen: set[str] = set()
+    for dt in parsed:
+        if dt.year == now_year:
+            label = dt.strftime("%b %d")
+        else:
+            label = dt.strftime("%b %d, %Y")
+        if label not in seen:
+            formatted.append(label)
+            seen.add(label)
+
+    n = len(parsed)
+    date_list = ", ".join(formatted[:5])
+    if len(formatted) > 5:
+        date_list += f" (+{len(formatted) - 5} more)"
+
+    if n == 1:
+        return f"Based on 1 conversation ({date_list})"
+    return f"Based on {n} conversations ({date_list})"
+
+
+def _enrich_source_traceability(records: list[dict]) -> list[dict]:
+    """Add source_summary and source_dates to records from their source_episodes."""
+    # Collect all unique source episode IDs across all records
+    all_src_ids: set[str] = set()
+    for rec in records:
+        src_eps = rec.get("source_episodes", [])
+        if src_eps:
+            all_src_ids.update(src_eps)
+
+    # Batch-fetch source episodes for their created_at dates
+    episodes_by_id = get_episodes_batch(list(all_src_ids)) if all_src_ids else {}
+
+    for rec in records:
+        src_eps = rec.get("source_episodes", [])
+        if not src_eps:
+            rec["source_summary"] = ""
+            rec["source_dates"] = []
+            continue
+
+        dates = []
+        for eid in src_eps:
+            ep = episodes_by_id.get(eid)
+            if ep:
+                dates.append(ep["created_at"])
+
+        rec["source_dates"] = dates
+        rec["source_summary"] = _format_source_dates(dates)
+
+    return records
+
+
 # ── Deduplication ─────────────────────────────────────────────────────────────
 
 def _deduplicate_episodes(
@@ -308,6 +387,12 @@ def recall(
         records, rec_warnings = _search_records(query, query_vec, include_expired=include_expired)
         warnings.extend(rec_warnings)
 
+        # Source traceability: enrich records and topics with source dates
+        if records:
+            records = _enrich_source_traceability(records)
+        if knowledge:
+            knowledge = _enrich_source_traceability(knowledge)
+
     # Deduplicate: remove episodes already represented by knowledge records
     if cfg.RECALL_DEDUP_ENABLED and records:
         episodes = _deduplicate_episodes(episodes, records)
@@ -370,6 +455,16 @@ def _search_knowledge(
         if filepath.exists():
             content = filepath.read_text(encoding="utf-8")
 
+        # Parse source_episodes for traceability
+        raw_src = topic.get("source_episodes", "[]")
+        if isinstance(raw_src, str):
+            try:
+                topic_src_eps: list[str] = json.loads(raw_src)
+            except (json.JSONDecodeError, ValueError):
+                topic_src_eps = []
+        else:
+            topic_src_eps = raw_src if raw_src is not None else []
+
         scored_topics.append({
             "topic": topic["filename"].replace(".md", ""),
             "filename": topic["filename"],
@@ -378,6 +473,7 @@ def _search_knowledge(
             "content": content,
             "confidence": topic["confidence"],
             "relevance": round(relevance, 3),
+            "source_episodes": topic_src_eps,
         })
 
     logger.debug(
