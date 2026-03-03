@@ -3,7 +3,6 @@
 Run with: python -m pytest tests/test_schemas.py -v
 """
 
-import pytest
 from unittest.mock import MagicMock
 
 from consolidation_memory.schemas import openai_tools, dispatch_tool_call
@@ -124,10 +123,32 @@ class TestDispatch:
             limit=20,
         )
 
-    def test_dispatch_unknown_raises(self):
+    def test_dispatch_unknown_returns_error(self):
         client = MagicMock()
-        with pytest.raises(ValueError, match="Unknown tool"):
-            dispatch_tool_call(client, "nonexistent_tool", {})
+        result = dispatch_tool_call(client, "nonexistent_tool", {})
+        assert "error" in result
+        assert "Unknown tool" in result["error"]
+
+    def test_dispatch_exception_returns_error(self):
+        """Any exception raised during dispatch should be caught and returned as error dict."""
+        client = MagicMock()
+        client.store.side_effect = RuntimeError("embedding backend down")
+        result = dispatch_tool_call(
+            client, "memory_store", {"content": "test"},
+        )
+        assert result == {"error": "embedding backend down"}
+
+    def test_dispatch_store_content_too_long(self):
+        """Content exceeding 50,000 chars should be rejected before calling client."""
+        client = MagicMock()
+        long_content = "x" * 50_001
+        result = dispatch_tool_call(
+            client, "memory_store", {"content": long_content},
+        )
+        assert "error" in result
+        assert "50001" in result["error"]
+        assert "50000" in result["error"]
+        client.store.assert_not_called()
 
     def test_dispatch_defaults_applied(self):
         """Dispatch should apply default values for optional arguments."""

@@ -25,6 +25,17 @@ logger = logging.getLogger("consolidation_memory")
 _client = None
 
 
+_MAX_BATCH_SIZE = 100
+
+
+def _get_client():
+    """Return the global client or raise if not initialized."""
+    client = _client
+    if client is None:
+        raise RuntimeError("Memory system not initialized")
+    return client
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     """Initialize MemoryClient on startup, shut down on exit."""
@@ -37,12 +48,17 @@ async def lifespan(server: FastMCP):
     from consolidation_memory.config import get_active_project
     logger.info("Active project: %s", get_active_project())
 
-    _client = MemoryClient()
+    try:
+        _client = MemoryClient()
+    except Exception:
+        logger.exception("Failed to initialize MemoryClient")
+        _client = None
 
     yield
 
-    _client.close()
-    _client = None
+    if _client is not None:
+        _client.close()
+        _client = None
     logger.info("Shutting down consolidation_memory MCP server.")
 
 
@@ -76,12 +92,15 @@ async def memory_store(
         tags: Optional topic tags for organization (e.g., ['vr', 'steamvr']).
         surprise: How novel this is, 0.0 (routine) to 1.0 (very surprising).
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    if len(content) > 50_000:
-        return json.dumps({"error": "Content exceeds maximum length of 50KB"})
-    result = await asyncio.to_thread(_client.store, content, content_type, tags, surprise)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        if len(content) > 50_000:
+            return json.dumps({"error": "Content exceeds maximum length of 50KB"})
+        result = await asyncio.to_thread(client.store, content, content_type, tags, surprise)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_store failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -115,17 +134,20 @@ async def memory_recall(
         as_of: ISO datetime for temporal belief queries. Returns knowledge state
             at that point in time, including records since superseded.
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    n_results = min(n_results, 50)
-    result = await asyncio.to_thread(
-        lambda: _client.recall(
-            query, n_results, include_knowledge,
-            content_types=content_types, tags=tags, after=after, before=before,
-            include_expired=include_expired, as_of=as_of,
+    try:
+        client = _get_client()
+        n_results = max(1, min(n_results, 50))
+        result = await asyncio.to_thread(
+            lambda: client.recall(
+                query, n_results, include_knowledge,
+                content_types=content_types, tags=tags, after=after, before=before,
+                include_expired=include_expired, as_of=as_of,
+            )
         )
-    )
-    return json.dumps(dataclasses.asdict(result), default=str)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_recall failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -144,10 +166,15 @@ async def memory_store_batch(
             - tags (list[str]): Optional topic tags.
             - surprise (float): Novelty score 0.0-1.0.
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.store_batch, episodes)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        if len(episodes) > _MAX_BATCH_SIZE:
+            return json.dumps({"error": f"Batch size {len(episodes)} exceeds maximum of {_MAX_BATCH_SIZE}"})
+        result = await asyncio.to_thread(client.store_batch, episodes)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_store_batch failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -173,19 +200,22 @@ async def memory_search(
         before: Only episodes created before this ISO date.
         limit: Maximum results (default 20, max 50).
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(
-        lambda: _client.search(
-            query=query,
-            content_types=content_types,
-            tags=tags,
-            after=after,
-            before=before,
-            limit=min(limit, 50),
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(
+            lambda: client.search(
+                query=query,
+                content_types=content_types,
+                tags=tags,
+                after=after,
+                before=before,
+                limit=min(limit, 50),
+            )
         )
-    )
-    return json.dumps(dataclasses.asdict(result), default=str)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_search failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -194,10 +224,13 @@ async def memory_status() -> str:
 
     Call this to check the health and state of the memory system.
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.status)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(client.status)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_status failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -210,10 +243,13 @@ async def memory_forget(episode_id: str) -> str:
     Args:
         episode_id: The UUID of the episode to forget.
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.forget, episode_id)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(client.forget, episode_id)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_forget failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -224,10 +260,13 @@ async def memory_export() -> str:
     all episodes (non-deleted) and knowledge topics with their content.
     Returns the file path.
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.export)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(client.export)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_export failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -241,10 +280,13 @@ async def memory_correct(topic_filename: str, correction: str) -> str:
         topic_filename: The filename of the knowledge topic (e.g., 'vr_setup.md').
         correction: Description of what needs to be corrected and the correct information.
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.correct, topic_filename, correction)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(client.correct, topic_filename, correction)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_correct failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -255,10 +297,13 @@ async def memory_compact() -> str:
     Tombstones accumulate from forget and prune operations.
     Compaction rebuilds the index without dead vectors.
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.compact)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(client.compact)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_compact failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -271,12 +316,15 @@ async def memory_consolidate() -> str:
 
     NOTE: This can take several minutes depending on episode count and LLM speed.
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.consolidate)
-    if result.get("status") == "already_running":
-        return json.dumps({"status": "already_running", "message": "A consolidation run is already in progress"})
-    return json.dumps({"status": "completed", "report": result}, default=str)
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(client.consolidate)
+        if result.get("status") == "already_running":
+            return json.dumps({"status": "already_running", "message": "A consolidation run is already in progress"})
+        return json.dumps({"status": "completed", "report": result}, default=str)
+    except Exception as e:
+        logger.exception("memory_consolidate failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -290,10 +338,13 @@ async def memory_consolidation_log(last_n: int = 5) -> str:
     Args:
         last_n: Number of recent runs to show (1-20, default 5).
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.consolidation_log, last_n)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(client.consolidation_log, last_n)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_consolidation_log failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -304,10 +355,13 @@ async def memory_decay_report() -> str:
     low-confidence records, and protected episode counts.
     Does NOT actually delete anything — just reports.
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.decay_report)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(client.decay_report)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_decay_report failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -325,10 +379,13 @@ async def memory_protect(
         episode_id: Protect a specific episode by its UUID.
         tag: Protect all episodes with this tag.
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.protect, episode_id, tag)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(client.protect, episode_id, tag)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_protect failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -343,10 +400,13 @@ async def memory_timeline(topic: str) -> str:
     Args:
         topic: Natural language topic to query (e.g., 'frontend framework preference').
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.timeline, topic)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(client.timeline, topic)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_timeline failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -360,10 +420,13 @@ async def memory_contradictions(topic: str | None = None) -> str:
     Args:
         topic: Optional topic filename or title to filter results.
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.contradictions, topic)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(client.contradictions, topic)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_contradictions failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -374,10 +437,13 @@ async def memory_browse() -> str:
     record counts by type, confidence scores, and file paths. Use this
     to see what the memory system has learned and consolidated.
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.browse)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(client.browse)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_browse failed")
+        return json.dumps({"error": str(e)})
 
 
 @mcp.tool()
@@ -391,10 +457,13 @@ async def memory_read_topic(filename: str) -> str:
     Args:
         filename: The filename of the knowledge topic (e.g., 'python_setup.md').
     """
-    if _client is None:
-        return json.dumps({"error": "Memory system not initialized"})
-    result = await asyncio.to_thread(_client.read_topic, filename)
-    return json.dumps(dataclasses.asdict(result), default=str)
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(client.read_topic, filename)
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_read_topic failed")
+        return json.dumps({"error": str(e)})
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────

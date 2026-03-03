@@ -94,12 +94,21 @@ class CircuitBreaker:
 
         In HALF_OPEN state, allows the call through (the next success/failure
         will determine whether to close or reopen).
+
+        Uses the lock to avoid TOCTOU races with state transitions.
         """
-        if self.state == CircuitState.OPEN:
-            raise ConnectionError(
-                f"Circuit breaker [{self._name}] is OPEN — backend unavailable. "
-                f"Will probe again after {self._cooldown:.0f}s cooldown."
-            )
+        with self._lock:
+            if self._state == CircuitState.OPEN:
+                if time.time() - self._last_failure_time >= self._cooldown:
+                    self._state = CircuitState.HALF_OPEN
+                    logger.info(
+                        "Circuit breaker [%s]: OPEN -> HALF_OPEN (cooldown elapsed)", self._name
+                    )
+                else:
+                    raise ConnectionError(
+                        f"Circuit breaker [{self._name}] is OPEN — backend unavailable. "
+                        f"Will probe again after {self._cooldown:.0f}s cooldown."
+                    )
 
     def reset(self) -> None:
         """Force-reset to CLOSED state. Used in tests and backend reinitialization."""

@@ -24,6 +24,7 @@ import logging as _logging
 import os
 import re as _re
 import sys
+import threading as _threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -327,6 +328,15 @@ def _apply_env_overrides(c: Config) -> None:
         object.__setattr__(c, f.name, coerced)
 
 
+def _coerce_bool(val: object, default: bool = False) -> bool:
+    """Coerce a value to bool, handling TOML booleans and string edge cases."""
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() in ("1", "true", "yes")
+    return bool(val) if val is not None else default
+
+
 def _build_config(
     toml: dict | None = None,
     *,
@@ -400,14 +410,14 @@ def _build_config(
         LLM_API_KEY=_llm.get("api_key", ""),
         LLM_CALL_TIMEOUT=float(_llm.get("call_timeout", 120)),
         LLM_CORRECTION_TIMEOUT=float(_llm.get("correction_timeout", 90)),
-        LLM_VALIDATION_RETRY=bool(_consol.get("validation_retry", True)),
+        LLM_VALIDATION_RETRY=_coerce_bool(_consol.get("validation_retry", True)),
         # Consolidation
-        CONSOLIDATION_AUTO_RUN=bool(_consol.get("auto_run", True)),
+        CONSOLIDATION_AUTO_RUN=_coerce_bool(_consol.get("auto_run", True)),
         CONSOLIDATION_INTERVAL_HOURS=float(_consol.get("interval_hours", 6)),
         CONSOLIDATION_CLUSTER_THRESHOLD=float(_consol.get("cluster_threshold", 0.78)),
         CONSOLIDATION_MIN_CLUSTER_SIZE=int(_consol.get("min_cluster_size", 2)),
         CONSOLIDATION_MAX_CLUSTER_SIZE=int(_consol.get("max_cluster_size", 20)),
-        CONSOLIDATION_PRUNE_ENABLED=bool(_consol.get("prune_enabled", False)),
+        CONSOLIDATION_PRUNE_ENABLED=_coerce_bool(_consol.get("prune_enabled", False)),
         CONSOLIDATION_PRUNE_AFTER_DAYS=int(_consol.get("prune_after_days", 30)),
         DECAY_POLICIES={k: int(v) for k, v in cfg.get("decay_policies", {}).get("overrides", {}).items()},
         CONSOLIDATION_MAX_EPISODES_PER_RUN=int(_consol.get("max_episodes_per_run", 200)),
@@ -417,8 +427,8 @@ def _build_config(
         CONSOLIDATION_MAX_DURATION=float(_consol.get("max_duration", 1800)),
         CONSOLIDATION_MAX_ATTEMPTS=int(_consol.get("max_attempts", 5)),
         CONTRADICTION_SIMILARITY_THRESHOLD=float(_consol.get("contradiction_similarity_threshold", 0.7)),
-        CONTRADICTION_LLM_ENABLED=bool(_consol.get("contradiction_llm_enabled", True)),
-        MERGE_DROP_DETECTION_ENABLED=bool(_consol.get("merge_drop_detection_enabled", True)),
+        CONTRADICTION_LLM_ENABLED=_coerce_bool(_consol.get("contradiction_llm_enabled", True)),
+        MERGE_DROP_DETECTION_ENABLED=_coerce_bool(_consol.get("merge_drop_detection_enabled", True)),
         MERGE_DROP_SIMILARITY_THRESHOLD=float(_consol.get("merge_drop_similarity_threshold", 0.5)),
         CONSOLIDATION_STOPWORDS=stopwords,
         CONSOLIDATION_PRIORITY_WEIGHTS=_consol.get(
@@ -426,10 +436,10 @@ def _build_config(
             {"surprise": 0.4, "recency": 0.35, "access_frequency": 0.25},
         ),
         KNOWLEDGE_MAX_VERSIONS=int(_consol.get("knowledge_max_versions", 5)),
-        RENDER_MARKDOWN=bool(_consol.get("render_markdown", True)),
+        RENDER_MARKDOWN=_coerce_bool(_consol.get("render_markdown", True)),
         # Dedup
         DEDUP_SIMILARITY_THRESHOLD=float(_dedup.get("similarity_threshold", 0.95)),
-        DEDUP_ENABLED=bool(_dedup.get("enabled", True)),
+        DEDUP_ENABLED=_coerce_bool(_dedup.get("enabled", True)),
         # Scoring
         SURPRISE_BOOST_PER_ACCESS=float(_scoring.get("surprise_boost_per_access", 0.02)),
         SURPRISE_DECAY_INACTIVE_DAYS=int(_scoring.get("surprise_decay_inactive_days", 7)),
@@ -442,7 +452,7 @@ def _build_config(
         RECALL_DEFAULT_N=int(_recall.get("default_n", 10)),
         RECALL_MAX_N=int(_recall.get("max_n", 50)),
         # Hybrid search
-        HYBRID_SEARCH_ENABLED=bool(_retrieval.get("hybrid_search_enabled", True)),
+        HYBRID_SEARCH_ENABLED=_coerce_bool(_retrieval.get("hybrid_search_enabled", True)),
         HYBRID_SEMANTIC_WEIGHT=float(_retrieval.get("hybrid_semantic_weight", 0.7)),
         HYBRID_KEYWORD_WEIGHT=float(_retrieval.get("hybrid_keyword_weight", 0.3)),
         HYBRID_FTS_CANDIDATES=int(_retrieval.get("hybrid_fts_candidates", 50)),
@@ -457,7 +467,7 @@ def _build_config(
         RECORDS_RELEVANCE_THRESHOLD=float(_retrieval.get("records_relevance_threshold", 0.3)),
         RECORDS_MAX_RESULTS=int(_retrieval.get("records_max_results", 15)),
         EVOLVING_TOPIC_LOOKBACK_DAYS=int(_retrieval.get("evolving_topic_lookback_days", 30)),
-        RECALL_DEDUP_ENABLED=bool(_retrieval.get("recall_dedup_enabled", True)),
+        RECALL_DEDUP_ENABLED=_coerce_bool(_retrieval.get("recall_dedup_enabled", True)),
         # Plugins
         PLUGINS_ENABLED=list(_plugins.get("enabled", [])),
         # Circuit breaker
@@ -481,12 +491,17 @@ def _build_config(
 # ── Singleton ────────────────────────────────────────────────────────────────
 
 _config_instance: Config | None = None
+_config_lock = _threading.Lock()
 
 
 def get_config() -> Config:
     """Return the Config singleton, building from TOML on first access."""
     global _config_instance
-    if _config_instance is None:
+    if _config_instance is not None:
+        return _config_instance
+    with _config_lock:
+        if _config_instance is not None:
+            return _config_instance
         toml = _load_toml()
         _config_instance = _build_config(toml, _load_env=True)
         _validate_config(_config_instance)
@@ -724,6 +739,13 @@ def _validate_config(c: Config) -> None:
                 f"{name_a} ({val_a}) + {name_b} ({val_b}) = {total}, should sum to 1.0"
             )
 
+    _required_pw_keys = {"surprise", "recency", "access_frequency"}
+    _actual_pw_keys = set(c.CONSOLIDATION_PRIORITY_WEIGHTS.keys())
+    if _actual_pw_keys != _required_pw_keys:
+        errors.append(
+            f"consolidation.priority_weights must have keys {_required_pw_keys}, "
+            f"got {_actual_pw_keys}"
+        )
     pw_sum = sum(c.CONSOLIDATION_PRIORITY_WEIGHTS.values())
     if not (0.99 <= pw_sum <= 1.01):
         errors.append(

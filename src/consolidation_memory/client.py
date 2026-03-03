@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
@@ -284,13 +285,20 @@ class MemoryClient:
 
         # Validate and normalize
         items = []
-        for ep in episodes:
+        for i, ep in enumerate(episodes):
+            if not isinstance(ep, dict) or "content" not in ep:
+                logger.warning("Skipping episode %d: missing 'content' key", i)
+                continue
             ct = _normalize_content_type(ep.get("content_type", "exchange"))
+            try:
+                surprise = float(ep.get("surprise", 0.5))
+            except (TypeError, ValueError):
+                surprise = 0.5
             items.append({
                 "content": ep["content"],
                 "content_type": ct,
                 "tags": ep.get("tags"),
-                "surprise": max(0.0, min(1.0, ep.get("surprise", 0.5))),
+                "surprise": max(0.0, min(1.0, surprise)),
             })
 
         # Single embedding call for all texts
@@ -717,7 +725,7 @@ class MemoryClient:
         from consolidation_memory.database import get_all_knowledge_topics, upsert_knowledge_topic
         from consolidation_memory.consolidation.engine import _version_knowledge_file
         from consolidation_memory.consolidation.prompting import (
-            _parse_frontmatter, _count_facts, _normalize_output,
+            _parse_frontmatter, _normalize_output, _sanitize_for_prompt,
         )
         from consolidation_memory.backends import get_llm_backend
 
@@ -744,8 +752,8 @@ class MemoryClient:
         )
         user_prompt = (
             f"Apply this correction to the existing knowledge document:\n\n"
-            f"CORRECTION:\n{correction}\n\n"
-            f"EXISTING DOCUMENT:\n{existing_content}\n\n"
+            f"CORRECTION:\n{_sanitize_for_prompt(correction)}\n\n"
+            f"EXISTING DOCUMENT:\n{_sanitize_for_prompt(existing_content)}\n\n"
             f"Output the complete corrected document with updated frontmatter "
             f"(title, summary, tags, confidence).\n"
             f"Do NOT wrap in code fences. Output raw markdown starting with --- frontmatter."
@@ -794,7 +802,7 @@ class MemoryClient:
                     title=meta.get("title", topic["title"]),
                     summary=meta.get("summary", topic["summary"]),
                     source_episodes=[],
-                    fact_count=_count_facts(corrected),
+                    fact_count=len(re.findall(r"^[\s]*[-*\d+.]\s+", corrected, re.MULTILINE)),
                     confidence=float(meta.get("confidence", topic["confidence"])),
                 )
                 break
@@ -1414,6 +1422,10 @@ class MemoryClient:
             )
 
         while not self._consolidation_stop.wait(timeout=interval):
+            if self._consolidation_stop.is_set():
+                break
+            if self._consolidation_pool is None:
+                break
             if not self._consolidation_lock.acquire(blocking=False):
                 logger.info("Consolidation already running, skipping")
                 continue

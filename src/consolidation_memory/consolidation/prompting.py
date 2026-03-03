@@ -41,7 +41,7 @@ def shutdown_llm_executor() -> None:
     global _llm_executor
     with _llm_executor_lock:
         if _llm_executor is not None:
-            _llm_executor.shutdown(wait=False)
+            _llm_executor.shutdown(wait=True, cancel_futures=True)
             _llm_executor = None
 
 
@@ -235,10 +235,6 @@ def _parse_fm_lines(block: str) -> dict:
     return meta
 
 
-def _count_facts(text: str) -> int:
-    return len(re.findall(r"^[\s]*[-*\d+.]\s+", text, re.MULTILINE))
-
-
 def _parse_llm_json(text: str) -> dict | None:
     """Parse JSON from LLM output, handling code fences and whitespace."""
     text = text.strip()
@@ -247,9 +243,11 @@ def _parse_llm_json(text: str) -> dict | None:
     text = re.sub(r"\n?```\s*$", "", text)
     text = text.strip()
     try:
-        parsed: dict | None = json.loads(text)
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            return None
         return parsed
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError):
         return None
 
 
@@ -330,14 +328,14 @@ STRICT RULES:
 - Combine tags from both sets, deduplicated.
 - Output valid JSON only. No markdown, no code fences, no commentary.
 
-EXISTING RECORDS (title: "{existing_title}"):
-Summary: {existing_summary}
+EXISTING RECORDS (title: "{_sanitize_for_prompt(existing_title)}"):
+Summary: {_sanitize_for_prompt(existing_summary)}
 Tags: {json.dumps(existing_tags)}
 Records:
-{json.dumps(existing_records, indent=2)}
+{_sanitize_for_prompt(json.dumps(existing_records, indent=2))}
 
 NEW RECORDS TO MERGE:
-{json.dumps(new_records, indent=2)}
+{_sanitize_for_prompt(json.dumps(new_records, indent=2))}
 
 Output this exact JSON structure:
 {{"title": "...", "summary": "...", "tags": [...], "records": [...]}}"""
@@ -359,8 +357,8 @@ def _build_contradiction_prompt(pairs: list[tuple[dict, dict]]) -> str:
     ]
     for i, (existing_rec, new_rec) in enumerate(pairs):
         lines.append(f"\nPair {i + 1}:")
-        lines.append(f"  EXISTING: {json.dumps(existing_rec)}")
-        lines.append(f"  NEW: {json.dumps(new_rec)}")
+        lines.append(f"  EXISTING: {_sanitize_for_prompt(json.dumps(existing_rec))}")
+        lines.append(f"  NEW: {_sanitize_for_prompt(json.dumps(new_rec))}")
 
     lines.append("\nOutput JSON array of verdicts:")
     return "\n".join(lines)

@@ -500,6 +500,8 @@ MEMORY_CONSOLIDATION_LOG_SCHEMA: dict[str, Any] = {
             "properties": {
                 "last_n": {
                     "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
                     "description": "Number of recent runs to show (1-20, default 5).",
                     "default": 5,
                 },
@@ -555,110 +557,122 @@ def dispatch_tool_call(
         arguments: Parsed arguments dict from the function call.
 
     Returns:
-        Dict representation of the result.
-
-    Raises:
-        ValueError: If the tool name is unknown.
+        Dict representation of the result.  On any error, returns
+        ``{"error": "<message>"}`` instead of raising.
     """
-    if name == "memory_store":
-        store_result = client.store(
-            content=arguments["content"],
-            content_type=arguments.get("content_type", "exchange"),
-            tags=arguments.get("tags"),
-            surprise=arguments.get("surprise", 0.5),
-        )
-        return dataclasses.asdict(store_result)
+    _MAX_CONTENT_LENGTH = 50_000
 
-    elif name == "memory_store_batch":
-        batch_result = client.store_batch(episodes=arguments["episodes"])
-        return dataclasses.asdict(batch_result)
+    try:
+        if name == "memory_store":
+            content = arguments["content"]
+            if len(content) > _MAX_CONTENT_LENGTH:
+                return {
+                    "error": (
+                        f"Content too long ({len(content)} chars). "
+                        f"Maximum is {_MAX_CONTENT_LENGTH} characters."
+                    )
+                }
+            store_result = client.store(
+                content=content,
+                content_type=arguments.get("content_type", "exchange"),
+                tags=arguments.get("tags"),
+                surprise=arguments.get("surprise", 0.5),
+            )
+            return dataclasses.asdict(store_result)
 
-    elif name == "memory_recall":
-        recall_result = client.recall(
-            query=arguments["query"],
-            n_results=arguments.get("n_results", 10),
-            include_knowledge=arguments.get("include_knowledge", True),
-            content_types=arguments.get("content_types"),
-            tags=arguments.get("tags"),
-            after=arguments.get("after"),
-            before=arguments.get("before"),
-            include_expired=arguments.get("include_expired", False),
-            as_of=arguments.get("as_of"),
-        )
-        return dataclasses.asdict(recall_result)
+        elif name == "memory_store_batch":
+            batch_result = client.store_batch(episodes=arguments["episodes"])
+            return dataclasses.asdict(batch_result)
 
-    elif name == "memory_search":
-        search_result = client.search(
-            query=arguments.get("query"),
-            content_types=arguments.get("content_types"),
-            tags=arguments.get("tags"),
-            after=arguments.get("after"),
-            before=arguments.get("before"),
-            limit=arguments.get("limit", 20),
-        )
-        return dataclasses.asdict(search_result)
+        elif name == "memory_recall":
+            recall_result = client.recall(
+                query=arguments["query"],
+                n_results=arguments.get("n_results", 10),
+                include_knowledge=arguments.get("include_knowledge", True),
+                content_types=arguments.get("content_types"),
+                tags=arguments.get("tags"),
+                after=arguments.get("after"),
+                before=arguments.get("before"),
+                include_expired=arguments.get("include_expired", False),
+                as_of=arguments.get("as_of"),
+            )
+            return dataclasses.asdict(recall_result)
 
-    elif name == "memory_status":
-        status_result = client.status()
-        return dataclasses.asdict(status_result)
+        elif name == "memory_search":
+            search_result = client.search(
+                query=arguments.get("query"),
+                content_types=arguments.get("content_types"),
+                tags=arguments.get("tags"),
+                after=arguments.get("after"),
+                before=arguments.get("before"),
+                limit=arguments.get("limit", 20),
+            )
+            return dataclasses.asdict(search_result)
 
-    elif name == "memory_forget":
-        forget_result = client.forget(episode_id=arguments["episode_id"])
-        return dataclasses.asdict(forget_result)
+        elif name == "memory_status":
+            status_result = client.status()
+            return dataclasses.asdict(status_result)
 
-    elif name == "memory_export":
-        export_result = client.export()
-        return dataclasses.asdict(export_result)
+        elif name == "memory_forget":
+            forget_result = client.forget(episode_id=arguments["episode_id"])
+            return dataclasses.asdict(forget_result)
 
-    elif name == "memory_correct":
-        correct_result = client.correct(
-            topic_filename=arguments["topic_filename"],
-            correction=arguments["correction"],
-        )
-        return dataclasses.asdict(correct_result)
+        elif name == "memory_export":
+            export_result = client.export()
+            return dataclasses.asdict(export_result)
 
-    elif name == "memory_compact":
-        compact_result = client.compact()
-        return dataclasses.asdict(compact_result)
+        elif name == "memory_correct":
+            correct_result = client.correct(
+                topic_filename=arguments["topic_filename"],
+                correction=arguments["correction"],
+            )
+            return dataclasses.asdict(correct_result)
 
-    elif name == "memory_consolidate":
-        consolidate_result = client.consolidate()
-        return dict(consolidate_result)
+        elif name == "memory_compact":
+            compact_result = client.compact()
+            return dataclasses.asdict(compact_result)
 
-    elif name == "memory_protect":
-        protect_result = client.protect(
-            episode_id=arguments.get("episode_id"),
-            tag=arguments.get("tag"),
-        )
-        return dataclasses.asdict(protect_result)
+        elif name == "memory_consolidate":
+            consolidate_result = client.consolidate()
+            return dict(consolidate_result)
 
-    elif name == "memory_timeline":
-        timeline_result = client.timeline(topic=arguments["topic"])
-        return dataclasses.asdict(timeline_result)
+        elif name == "memory_protect":
+            protect_result = client.protect(
+                episode_id=arguments.get("episode_id"),
+                tag=arguments.get("tag"),
+            )
+            return dataclasses.asdict(protect_result)
 
-    elif name == "memory_contradictions":
-        contradictions_result = client.contradictions(
-            topic=arguments.get("topic"),
-        )
-        return dataclasses.asdict(contradictions_result)
+        elif name == "memory_timeline":
+            timeline_result = client.timeline(topic=arguments["topic"])
+            return dataclasses.asdict(timeline_result)
 
-    elif name == "memory_browse":
-        browse_result = client.browse()
-        return dataclasses.asdict(browse_result)
+        elif name == "memory_contradictions":
+            contradictions_result = client.contradictions(
+                topic=arguments.get("topic"),
+            )
+            return dataclasses.asdict(contradictions_result)
 
-    elif name == "memory_read_topic":
-        read_topic_result = client.read_topic(filename=arguments["filename"])
-        return dataclasses.asdict(read_topic_result)
+        elif name == "memory_browse":
+            browse_result = client.browse()
+            return dataclasses.asdict(browse_result)
 
-    elif name == "memory_decay_report":
-        decay_report_result = client.decay_report()
-        return dataclasses.asdict(decay_report_result)
+        elif name == "memory_read_topic":
+            read_topic_result = client.read_topic(filename=arguments["filename"])
+            return dataclasses.asdict(read_topic_result)
 
-    elif name == "memory_consolidation_log":
-        log_result = client.consolidation_log(
-            last_n=arguments.get("last_n", 5),
-        )
-        return dataclasses.asdict(log_result)
+        elif name == "memory_decay_report":
+            decay_report_result = client.decay_report()
+            return dataclasses.asdict(decay_report_result)
 
-    else:
-        raise ValueError(f"Unknown tool: {name}")
+        elif name == "memory_consolidation_log":
+            log_result = client.consolidation_log(
+                last_n=arguments.get("last_n", 5),
+            )
+            return dataclasses.asdict(log_result)
+
+        else:
+            return {"error": f"Unknown tool: {name}"}
+
+    except Exception as e:
+        return {"error": str(e)}

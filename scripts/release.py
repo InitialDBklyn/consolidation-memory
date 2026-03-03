@@ -19,9 +19,9 @@ PYPROJECT = ROOT / "pyproject.toml"
 CHANGELOG = ROOT / "CHANGELOG.md"
 
 
-def run(cmd: str, *, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
-    print(f"  $ {cmd}")
-    return subprocess.run(cmd, shell=True, cwd=str(ROOT), check=check, capture_output=capture, text=True)
+def run(cmd: list[str], *, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess:
+    print(f"  $ {' '.join(cmd)}")
+    return subprocess.run(cmd, cwd=str(ROOT), check=check, capture_output=capture, text=True)
 
 
 def get_current_version() -> str:
@@ -81,19 +81,26 @@ def main():
     print(f"{'(DRY RUN)' if args.dry_run else ''}\n")
 
     # 1. Check working tree is clean
-    result = run("git status --porcelain", capture=True)
+    result = run(["git", "status", "--porcelain"], capture=True)
     if result.stdout.strip():
         sys.exit("Working tree is not clean. Commit or stash changes first.")
 
     # 2. Pull latest
     print("\n[1/6] Pulling latest from origin...")
     if not args.dry_run:
-        run("git pull --ff-only origin main")
+        run(["git", "pull", "--ff-only", "origin", "main"])
 
     # 3. Bump version in pyproject.toml (single source of truth)
     print(f"\n[2/6] Bumping version: {current} -> {new_version}")
     if not args.dry_run:
         set_version(new_version)
+        # Verify the substitution actually took effect
+        actual = get_current_version()
+        if actual != new_version:
+            sys.exit(
+                f"Version substitution failed: expected {new_version}, "
+                f"got {actual} in pyproject.toml"
+            )
 
     # 4. Add changelog header
     print(f"\n[3/6] Adding changelog header for {new_version}")
@@ -105,31 +112,35 @@ def main():
     # 5. Reinstall and run tests
     print("\n[4/6] Reinstalling and running tests...")
     if not args.dry_run:
-        run("pip install -e \".[fastembed,dev]\" --quiet")
-        result = run("python -m pytest tests/ -v", check=False)
+        run([sys.executable, "-m", "pip", "install", "-e", ".[fastembed,dev]", "--quiet"])
+        result = run([sys.executable, "-m", "pytest", "tests/", "-v"], check=False)
         if result.returncode != 0:
-            sys.exit("Tests failed — aborting release. Fix failures and re-run.")
-        result = run("python -m ruff check src/ tests/", check=False)
+            # Rollback version bump before aborting
+            print(f"  Rolling back version to {current}...")
+            set_version(current)
+            sys.exit("Tests failed — aborting release. Version reverted. Fix failures and re-run.")
+        result = run([sys.executable, "-m", "ruff", "check", "src/", "tests/"], check=False)
         if result.returncode != 0:
-            sys.exit("Lint check failed — aborting release. Fix lint errors and re-run.")
+            print(f"  Rolling back version to {current}...")
+            set_version(current)
+            sys.exit("Lint check failed — aborting release. Version reverted. Fix lint errors and re-run.")
 
     # 6. Commit + tag
     print(f"\n[5/6] Committing v{new_version}...")
     if not args.dry_run:
-        run("git add pyproject.toml CHANGELOG.md")
-        run(f'git commit -m "v{new_version}"')
-        run(f"git tag v{new_version}")
+        run(["git", "add", "pyproject.toml", "CHANGELOG.md"])
+        run(["git", "commit", "-m", f"v{new_version}"])
+        run(["git", "tag", f"v{new_version}"])
 
-    # 7. Push
+    # 7. Push (main + tag atomically in one command)
     if args.no_push:
         print("\n[6/6] Skipping push (--no-push). Run manually:")
-        print(f"  git push origin main && git push origin v{new_version}")
+        print(f"  git push origin main v{new_version}")
     elif args.dry_run:
         print(f"\n[6/6] Would push main + tag v{new_version}")
     else:
         print(f"\n[6/6] Pushing main + tag v{new_version}...")
-        run("git push origin main")
-        run(f"git push origin v{new_version}")
+        run(["git", "push", "origin", "main", f"v{new_version}"])
 
     print(f"\nDone! v{new_version} {'would be' if args.dry_run else 'is'} released.")
     if not args.dry_run and not args.no_push:

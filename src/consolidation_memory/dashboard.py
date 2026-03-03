@@ -65,7 +65,7 @@ class EpisodesTab(Container):
                 ep["content_preview"],
                 ep["content_type"],
                 tags,
-                f"{ep['surprise_score']:.2f}",
+                f"{ep.get('surprise_score') or 0:.2f}",
                 _fmt_ts(ep["created_at"]),
                 status,
             )
@@ -90,6 +90,10 @@ class EpisodesTab(Container):
 
 class KnowledgeTab(Container):
     """Knowledge topics list with record detail panel."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._topics: list[dict] = []
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -168,14 +172,14 @@ class ConsolidationTab(Container):
 
         for r in runs:
             table.add_row(
-                _fmt_ts(r["started_at"]),
+                _fmt_ts(r.get("started_at")),
                 _fmt_ts(r.get("completed_at")),
-                str(r["episodes_processed"]),
-                str(r["clusters_formed"]),
-                str(r["topics_created"]),
-                str(r["topics_updated"]),
-                str(r["episodes_pruned"]),
-                r["status"],
+                str(r.get("episodes_processed", 0)),
+                str(r.get("clusters_formed", 0)),
+                str(r.get("topics_created", 0)),
+                str(r.get("topics_updated", 0)),
+                str(r.get("episodes_pruned", 0)),
+                r.get("status", "unknown"),
             )
 
 

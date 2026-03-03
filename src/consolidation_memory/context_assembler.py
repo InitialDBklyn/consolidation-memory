@@ -353,11 +353,17 @@ def recall(
     cfg = get_config()
     n_results = min(n_results, cfg.RECALL_MAX_N)
 
+    # Parse date filters to proper datetime objects once, so all downstream
+    # comparisons are temporal rather than lexicographic string ordering.
+    after_dt = parse_datetime(after) if after else None
+    before_dt = parse_datetime(before) if before else None
+    as_of_dt = parse_datetime(as_of) if as_of else None
+
     # Temporal belief query: as_of caps episode results to that point in time.
     # Use whichever is earlier: the explicit `before` or `as_of`.
-    if as_of:
-        if before is None or as_of < before:
-            before = as_of
+    if as_of_dt:
+        if before_dt is None or as_of_dt < before_dt:
+            before_dt = as_of_dt
 
     # Fetch more candidates when filtering, since many will be discarded
     fetch_k = n_results * 5 if (content_types or tags or after or before) else n_results * 3
@@ -414,10 +420,15 @@ def recall(
             ep_tags = parse_json_list(ep["tags"])
             if not _tag_set.intersection(ep_tags):
                 continue
-        if after and ep["created_at"] < after:
-            continue
-        if before and ep["created_at"] > before:
-            continue
+        if after_dt or before_dt:
+            try:
+                ep_dt = parse_datetime(ep["created_at"])
+            except (ValueError, TypeError):
+                continue
+            if after_dt and ep_dt < after_dt:
+                continue
+            if before_dt and ep_dt > before_dt:
+                continue
 
         cosine_sim = cosine_map.get(episode_id, 0.0)
         bm25_norm = bm25_map.get(episode_id, 0.0)
@@ -499,10 +510,17 @@ def _search_knowledge(
 
     # Temporal belief query: filter topics to those that existed at as_of
     if as_of:
-        filtered_indices = [
-            i for i, t in enumerate(topics)
-            if t.get("created_at", "") <= as_of
-        ]
+        as_of_dt = parse_datetime(as_of)
+        filtered_indices = []
+        for i, t in enumerate(topics):
+            topic_created = t.get("created_at", "")
+            if not topic_created:
+                continue
+            try:
+                if parse_datetime(topic_created) <= as_of_dt:
+                    filtered_indices.append(i)
+            except (ValueError, TypeError):
+                continue
         topics = [topics[i] for i in filtered_indices]
         if summary_vecs is not None and len(filtered_indices) < len(summary_vecs):
             summary_vecs = summary_vecs[filtered_indices] if filtered_indices else None
@@ -516,7 +534,7 @@ def _search_knowledge(
             sims = (query_vec @ summary_vecs.T).flatten()
         else:
             sims = None
-    except Exception as e:
+    except (ConnectionError, RuntimeError, ValueError) as e:
         logger.warning(
             "Semantic knowledge search failed, falling back to keyword: %s", e,
             exc_info=True,
@@ -570,11 +588,11 @@ def _search_knowledge(
         len(topics), len(scored_topics), cfg.KNOWLEDGE_RELEVANCE_THRESHOLD,
     )
 
-    if scored_topics:
-        increment_topic_access([t["filename"] for t in scored_topics])
-
     scored_topics.sort(key=lambda x: x["relevance"], reverse=True)
     top_topics = scored_topics[:cfg.KNOWLEDGE_MAX_RESULTS]
+
+    if top_topics:
+        increment_topic_access([t["filename"] for t in top_topics])
 
     # Uncertainty signaling: flag evolving topics with recent contradictions
     _apply_evolving_topic_signals(top_topics, warnings)
@@ -611,7 +629,7 @@ def _search_records(
         texts = [r["embedding_text"] for r in records]
         try:
             record_vecs = backends.encode_documents(texts)
-        except Exception as e:
+        except (ConnectionError, RuntimeError, ValueError) as e:
             logger.warning("Failed to embed temporal records: %s", e, exc_info=True)
             record_vecs = None
     else:
@@ -626,7 +644,7 @@ def _search_records(
             sims = (query_vec @ record_vecs.T).flatten()
         else:
             sims = None
-    except Exception as e:
+    except (ConnectionError, RuntimeError, ValueError) as e:
         logger.warning(
             "Semantic record search failed, falling back to keyword: %s", e,
             exc_info=True,
@@ -687,11 +705,11 @@ def _search_records(
         len(records), len(scored_records), cfg.RECORDS_RELEVANCE_THRESHOLD,
     )
 
-    if scored_records:
-        increment_record_access([r["id"] for r in scored_records])
-
     scored_records.sort(key=lambda x: x["relevance"], reverse=True)
     top_records = scored_records[:cfg.RECORDS_MAX_RESULTS]
+
+    if top_records:
+        increment_record_access([r["id"] for r in top_records])
 
     # Uncertainty signaling: flag low-confidence records
     _apply_uncertainty_signals(top_records, warnings)

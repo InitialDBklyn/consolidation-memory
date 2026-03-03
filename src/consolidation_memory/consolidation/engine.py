@@ -76,7 +76,7 @@ def _version_knowledge_file(filepath: Path) -> None:
 
     get_config().KNOWLEDGE_VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%f")
     stem = filepath.stem
     versioned_name = f"{stem}.{timestamp}.md"
     versioned_path = get_config().KNOWLEDGE_VERSIONS_DIR / versioned_name
@@ -90,7 +90,7 @@ def _version_knowledge_file(filepath: Path) -> None:
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
-    for old in existing_versions[get_config().KNOWLEDGE_MAX_VERSIONS:]:
+    for old in existing_versions[get_config().KNOWLEDGE_MAX_VERSIONS :]:
         old.unlink()
         logger.debug("Pruned old version: %s", old.name)
 
@@ -166,10 +166,7 @@ def _detect_contradictions(
 
     if not get_config().CONTRADICTION_LLM_ENABLED:
         # Without LLM, treat all high-similarity pairs as contradictions
-        return [
-            (new_idx, existing_records[ex_idx]["id"])
-            for new_idx, ex_idx in candidate_pairs
-        ]
+        return [(new_idx, existing_records[ex_idx]["id"]) for new_idx, ex_idx in candidate_pairs]
 
     # Build pair contents for LLM verification
     pair_contents: list[tuple[dict, dict]] = []
@@ -296,6 +293,16 @@ def _merge_into_existing(
     # Parse existing topic metadata
     existing_tags = []
     filepath = get_config().KNOWLEDGE_DIR / existing["filename"]
+
+    # Validate that the resolved path stays within KNOWLEDGE_DIR (path traversal guard)
+    knowledge_dir_resolved = get_config().KNOWLEDGE_DIR.resolve()
+    if not filepath.resolve().is_relative_to(knowledge_dir_resolved):
+        logger.error(
+            "Path traversal detected: %s resolves outside KNOWLEDGE_DIR", existing["filename"]
+        )
+        increment_consolidation_attempts(cluster_ep_ids)
+        return "failed", 0
+
     if filepath.exists():
         existing_content = filepath.read_text(encoding="utf-8")
         parsed_fm = _parse_frontmatter(existing_content)
@@ -333,7 +340,9 @@ def _merge_into_existing(
         logger.error(
             "LLM merge for %s dropped too many records (%d -> %d); "
             "rejecting merge to prevent data loss.",
-            existing["filename"], len(existing_db_records), len(merged_records),
+            existing["filename"],
+            len(existing_db_records),
+            len(merged_records),
         )
         increment_consolidation_attempts(cluster_ep_ids)
         return "failed", merge_calls
@@ -357,8 +366,7 @@ def _merge_into_existing(
             )
         if silent_drops:
             logger.warning(
-                "Merge for %s: %d/%d pre-merge records potentially dropped "
-                "(threshold=%.2f)",
+                "Merge for %s: %d/%d pre-merge records potentially dropped (threshold=%.2f)",
                 existing["filename"],
                 len(silent_drops),
                 len(pre_merge),
@@ -493,14 +501,17 @@ def _process_cluster(
             key=lambda item: item[0].get("surprise_score", 0.5),
             reverse=True,
         )
-        kept = sorted_items[:cfg.CONSOLIDATION_MAX_CLUSTER_SIZE]
-        dropped = sorted_items[cfg.CONSOLIDATION_MAX_CLUSTER_SIZE:]
+        kept = sorted_items[: cfg.CONSOLIDATION_MAX_CLUSTER_SIZE]
+        dropped = sorted_items[cfg.CONSOLIDATION_MAX_CLUSTER_SIZE :]
         dropped_ids = [ep["id"] for ep, _ in dropped]
         increment_consolidation_attempts(dropped_ids)
         logger.warning(
             "Cluster %d truncated from %d to %d episodes; %d dropped episodes "
             "had consolidation_attempts incremented",
-            cluster_id, len(cluster_items), len(kept), len(dropped_ids),
+            cluster_id,
+            len(cluster_items),
+            len(kept),
+            len(dropped_ids),
         )
         cluster_items = kept
 
@@ -532,9 +543,7 @@ def _process_cluster(
         extraction_data, calls = _llm_extract_with_validation(prompt, cluster_episodes)
         api_calls += calls
     except Exception as e:
-        logger.error(
-            "LLM extraction failed for cluster %d: %s", cluster_id, e, exc_info=True
-        )
+        logger.error("LLM extraction failed for cluster %d: %s", cluster_id, e, exc_info=True)
         increment_consolidation_attempts(cluster_ep_ids)
         return {"status": "failed", "api_calls": api_calls, "failed_ep_ids": cluster_ep_ids}
 
@@ -641,11 +650,14 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
 
     try:
         episodes = get_unconsolidated_episodes(
-            limit=cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN, max_attempts=cfg.CONSOLIDATION_MAX_ATTEMPTS
+            limit=cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN,
+            max_attempts=cfg.CONSOLIDATION_MAX_ATTEMPTS,
         )
 
         get_plugin_manager().fire(
-            "on_consolidation_start", run_id=run_id, episode_count=len(episodes),
+            "on_consolidation_start",
+            run_id=run_id,
+            episode_count=len(episodes),
         )
 
         if len(episodes) < cfg.CONSOLIDATION_MIN_CLUSTER_SIZE:
@@ -653,196 +665,229 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
             complete_consolidation_run(
                 run_id, status=RUN_STATUS_COMPLETED, episodes_processed=len(episodes)
             )
-            return {"status": "nothing_to_consolidate", "episodes": len(episodes)}
+            early_report: ConsolidationReport = {
+                "status": "nothing_to_consolidate",
+                "episodes": len(episodes),
+            }
+            get_plugin_manager().fire("on_consolidation_complete", report=early_report)
+            return early_report
 
         logger.info("Loaded %d unconsolidated episodes", len(episodes))
 
+        local_vs = vector_store is None
         vs = vector_store if vector_store is not None else VectorStore()
-        episode_ids = [ep["id"] for ep in episodes]
-        batch_result = vs.reconstruct_batch(episode_ids)
-
-        if batch_result is None:
-            logger.warning("No vectors found for episodes — aborting.")
-            complete_consolidation_run(
-                run_id, status=RUN_STATUS_FAILED, error_message="No vectors in FAISS"
-            )
-            return {"status": "error", "message": "No vectors found"}
-
-        found_ids, vectors = batch_result
-
-        id_to_episode = {ep["id"]: ep for ep in episodes}
-        valid_episodes = [id_to_episode[uid] for uid in found_ids if uid in id_to_episode]
-
-        sim_matrix = vectors @ vectors.T
-        np.fill_diagonal(sim_matrix, 1.0)
-        dist_matrix = 1.0 - sim_matrix
-        dist_matrix = np.clip(dist_matrix, 0, 2)
-
-        if len(valid_episodes) < 2:
-            logger.info("Only 1 valid episode — skipping clustering.")
-            complete_consolidation_run(run_id, status=RUN_STATUS_COMPLETED, episodes_processed=1)
-            return {"status": "too_few_episodes"}
-
-        condensed = squareform(dist_matrix, checks=False)
-        Z = linkage(condensed, method="average")
-        labels = fcluster(Z, t=1.0 - cfg.CONSOLIDATION_CLUSTER_THRESHOLD, criterion="distance")
-
-        clusters: dict[int, list[tuple[dict, int]]] = {}
-        for idx, (ep, label) in enumerate(zip(valid_episodes, labels)):
-            clusters.setdefault(int(label), []).append((ep, idx))
-
-        valid_clusters = {
-            k: v for k, v in clusters.items() if len(v) >= cfg.CONSOLIDATION_MIN_CLUSTER_SIZE
-        }
-
-        logger.info(
-            "Formed %d clusters, %d valid (>=%d episodes)",
-            len(clusters),
-            len(valid_clusters),
-            cfg.CONSOLIDATION_MIN_CLUSTER_SIZE,
-        )
-
-        topics_created = 0
-        topics_updated = 0
-        clusters_failed = 0
-        consecutive_failures = 0
-        api_calls = 0
-        _run_start = time.monotonic()
-        cluster_confidences: list[float] = []
-        all_failed_ep_ids: list[str] = []
-
-        for cluster_id, cluster_items in valid_clusters.items():
-            elapsed = time.monotonic() - _run_start
-            if elapsed > cfg.CONSOLIDATION_MAX_DURATION:
-                logger.warning(
-                    "Consolidation max duration (%.0fs) exceeded after %.0fs, stopping early",
-                    cfg.CONSOLIDATION_MAX_DURATION,
-                    elapsed,
-                )
-                break
-
-            if consecutive_failures >= 3:
-                logger.warning(
-                    "3 consecutive cluster failures — aborting consolidation "
-                    "(backend likely unavailable)"
-                )
-                break
-
-            cluster_result = _process_cluster(
-                cluster_id,
-                cluster_items,
-                sim_matrix,
-                cluster_confidences,
-            )
-            api_calls += cluster_result["api_calls"]
-            if cluster_result["status"] == "created":
-                topics_created += 1
-                consecutive_failures = 0
-            elif cluster_result["status"] == "updated":
-                topics_updated += 1
-                consecutive_failures = 0
-            elif cluster_result["status"] == "failed":
-                clusters_failed += 1
-                consecutive_failures += 1
-                all_failed_ep_ids.extend(cluster_result.get("failed_ep_ids", []))
-
-        _update_index()
-
-        surprise_adjusted = _adjust_surprise_scores()
-
-        prunable = []
-        if cfg.CONSOLIDATION_PRUNE_ENABLED:
-            prunable = get_prunable_episodes(days=cfg.CONSOLIDATION_PRUNE_AFTER_DAYS)
-            if prunable:
-                prune_ids = [ep["id"] for ep in prunable]
-                mark_pruned(prune_ids)
-                removed = vs.remove_batch(prune_ids)
-                logger.info(
-                    "Pruned %d old episodes (%d vectors tombstoned)", len(prunable), removed
-                )
-                get_plugin_manager().fire("on_prune", episode_ids=prune_ids)
-        else:
-            logger.debug("Pruning disabled (set prune_enabled = true in config to enable)")
-
-        logger.info(
-            "FAISS tombstone ratio: %.1f%% (compaction threshold: %.1f%%)",
-            vs.tombstone_ratio * 100,
-            cfg.FAISS_COMPACTION_THRESHOLD * 100,
-        )
-        if vs.tombstone_ratio >= cfg.FAISS_COMPACTION_THRESHOLD:
-            compacted = vs.compact()
-            logger.info("Compacted %d tombstoned vectors from FAISS index", compacted)
-
-        VectorStore.signal_reload()
-
-        report: ConsolidationReport = {
-            "run_id": run_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "episodes_loaded": len(episodes),
-            "episodes_with_vectors": len(valid_episodes),
-            "clusters_total": len(clusters),
-            "clusters_valid": len(valid_clusters),
-            "clusters_failed": clusters_failed,
-            "topics_created": topics_created,
-            "topics_updated": topics_updated,
-            "episodes_pruned": len(prunable),
-            "surprise_adjusted": surprise_adjusted,
-            "api_calls": api_calls,
-            "failed_episode_ids": all_failed_ep_ids,
-        }
-
-        report_path = cfg.CONSOLIDATION_LOG_DIR / (
-            f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')}.json"
-        )
-        report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-
-        complete_consolidation_run(
-            run_id,
-            episodes_processed=len(valid_episodes),
-            clusters_formed=len(valid_clusters),
-            topics_created=topics_created,
-            topics_updated=topics_updated,
-            episodes_pruned=len(prunable),
-        )
-
-        avg_conf = 0.0
-        if cluster_confidences:
-            avg_conf = round(sum(cluster_confidences) / len(cluster_confidences), 4)
-
         try:
-            insert_consolidation_metrics(
-                run_id=run_id,
-                clusters_succeeded=topics_created + topics_updated,
-                clusters_failed=clusters_failed,
-                avg_confidence=avg_conf,
-                episodes_processed=len(episodes),
-                duration_seconds=round(time.monotonic() - _run_start, 2),
-                api_calls=api_calls,
+            episode_ids = [ep["id"] for ep in episodes]
+            batch_result = vs.reconstruct_batch(episode_ids)
+
+            if batch_result is None:
+                logger.warning("No vectors found for episodes — aborting.")
+                complete_consolidation_run(
+                    run_id, status=RUN_STATUS_FAILED, error_message="No vectors in FAISS"
+                )
+                return {"status": "error", "message": "No vectors found"}
+
+            found_ids, vectors = batch_result
+
+            id_to_episode = {ep["id"]: ep for ep in episodes}
+            valid_episodes = [id_to_episode[uid] for uid in found_ids if uid in id_to_episode]
+
+            sim_matrix = vectors @ vectors.T
+            np.fill_diagonal(sim_matrix, 1.0)
+            dist_matrix = 1.0 - sim_matrix
+            dist_matrix = np.clip(dist_matrix, 0, 2)
+
+            if len(valid_episodes) < 2:
+                logger.info("Only 1 valid episode — skipping clustering.")
+                complete_consolidation_run(
+                    run_id, status=RUN_STATUS_COMPLETED, episodes_processed=1
+                )
+                return {"status": "too_few_episodes"}
+
+            condensed = squareform(dist_matrix, checks=False)
+            Z = linkage(condensed, method="average")
+            labels = fcluster(Z, t=1.0 - cfg.CONSOLIDATION_CLUSTER_THRESHOLD, criterion="distance")
+
+            clusters: dict[int, list[tuple[dict, int]]] = {}
+            for idx, (ep, label) in enumerate(zip(valid_episodes, labels)):
+                clusters.setdefault(int(label), []).append((ep, idx))
+
+            valid_clusters = {
+                k: v for k, v in clusters.items() if len(v) >= cfg.CONSOLIDATION_MIN_CLUSTER_SIZE
+            }
+
+            logger.info(
+                "Formed %d clusters, %d valid (>=%d episodes)",
+                len(clusters),
+                len(valid_clusters),
+                cfg.CONSOLIDATION_MIN_CLUSTER_SIZE,
+            )
+
+            topics_created = 0
+            topics_updated = 0
+            clusters_failed = 0
+            consecutive_failures = 0
+            api_calls = 0
+            _run_start = time.monotonic()
+            cluster_confidences: list[float] = []
+            all_failed_ep_ids: list[str] = []
+
+            for cluster_id, cluster_items in valid_clusters.items():
+                elapsed = time.monotonic() - _run_start
+                if elapsed > cfg.CONSOLIDATION_MAX_DURATION:
+                    logger.warning(
+                        "Consolidation max duration (%.0fs) exceeded after %.0fs, stopping early",
+                        cfg.CONSOLIDATION_MAX_DURATION,
+                        elapsed,
+                    )
+                    break
+
+                if consecutive_failures >= 3:
+                    logger.warning(
+                        "3 consecutive cluster failures — aborting consolidation "
+                        "(backend likely unavailable)"
+                    )
+                    break
+
+                cluster_result = _process_cluster(
+                    cluster_id,
+                    cluster_items,
+                    sim_matrix,
+                    cluster_confidences,
+                )
+                api_calls += cluster_result["api_calls"]
+                if cluster_result["status"] == "created":
+                    topics_created += 1
+                    consecutive_failures = 0
+                elif cluster_result["status"] == "updated":
+                    topics_updated += 1
+                    consecutive_failures = 0
+                elif cluster_result["status"] == "failed":
+                    clusters_failed += 1
+                    consecutive_failures += 1
+                    all_failed_ep_ids.extend(cluster_result.get("failed_ep_ids", []))
+
+            _update_index()
+
+            surprise_adjusted = _adjust_surprise_scores()
+
+            prunable = []
+            if cfg.CONSOLIDATION_PRUNE_ENABLED:
+                prunable = get_prunable_episodes(days=cfg.CONSOLIDATION_PRUNE_AFTER_DAYS)
+                if prunable:
+                    prune_ids = [ep["id"] for ep in prunable]
+                    mark_pruned(prune_ids)
+                    removed = vs.remove_batch(prune_ids)
+                    logger.info(
+                        "Pruned %d old episodes (%d vectors tombstoned)",
+                        len(prunable),
+                        removed,
+                    )
+                    get_plugin_manager().fire("on_prune", episode_ids=prune_ids)
+            else:
+                logger.debug("Pruning disabled (set prune_enabled = true in config to enable)")
+
+            logger.info(
+                "FAISS tombstone ratio: %.1f%% (compaction threshold: %.1f%%)",
+                vs.tombstone_ratio * 100,
+                cfg.FAISS_COMPACTION_THRESHOLD * 100,
+            )
+            if vs.tombstone_ratio >= cfg.FAISS_COMPACTION_THRESHOLD:
+                compacted = vs.compact()
+                logger.info("Compacted %d tombstoned vectors from FAISS index", compacted)
+
+            VectorStore.signal_reload()
+
+            report_ts = datetime.now(timezone.utc)
+            report: ConsolidationReport = {
+                "run_id": run_id,
+                "timestamp": report_ts.isoformat(),
+                "episodes_loaded": len(episodes),
+                "episodes_with_vectors": len(valid_episodes),
+                "clusters_total": len(clusters),
+                "clusters_valid": len(valid_clusters),
+                "clusters_failed": clusters_failed,
+                "topics_created": topics_created,
+                "topics_updated": topics_updated,
+                "episodes_pruned": len(prunable),
+                "surprise_adjusted": surprise_adjusted,
+                "api_calls": api_calls,
+                "failed_episode_ids": all_failed_ep_ids,
+            }
+
+            report_path = cfg.CONSOLIDATION_LOG_DIR / (
+                f"{report_ts.strftime('%Y-%m-%dT%H-%M-%S')}.json"
+            )
+            report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+            complete_consolidation_run(
+                run_id,
+                status=RUN_STATUS_COMPLETED,
+                episodes_processed=len(valid_episodes),
+                clusters_formed=len(valid_clusters),
                 topics_created=topics_created,
                 topics_updated=topics_updated,
-                episodes_pruned=report.get("episodes_pruned") or 0,
+                episodes_pruned=len(prunable),
             )
-        except Exception as e:
-            logger.warning("Failed to write consolidation metrics: %s", e)
 
-        logger.info(
-            "Consolidation complete: %d episodes -> %d clusters -> %d new topics, "
-            "%d updated, %d failed, %d pruned, %d surprise-adjusted",
-            len(valid_episodes),
-            len(valid_clusters),
-            topics_created,
-            topics_updated,
-            clusters_failed,
-            len(prunable),
-            surprise_adjusted,
-        )
-        get_plugin_manager().fire("on_consolidation_complete", report=report)
-        return report
+            avg_conf = 0.0
+            if cluster_confidences:
+                avg_conf = round(sum(cluster_confidences) / len(cluster_confidences), 4)
+
+            try:
+                insert_consolidation_metrics(
+                    run_id=run_id,
+                    clusters_succeeded=topics_created + topics_updated,
+                    clusters_failed=clusters_failed,
+                    avg_confidence=avg_conf,
+                    episodes_processed=len(episodes),
+                    duration_seconds=round(time.monotonic() - _run_start, 2),
+                    api_calls=api_calls,
+                    topics_created=topics_created,
+                    topics_updated=topics_updated,
+                    episodes_pruned=report.get("episodes_pruned") or 0,
+                )
+            except Exception as e:
+                logger.warning("Failed to write consolidation metrics: %s", e)
+
+            logger.info(
+                "Consolidation complete: %d episodes -> %d clusters -> "
+                "%d new topics, %d updated, %d failed, %d pruned, "
+                "%d surprise-adjusted",
+                len(valid_episodes),
+                len(valid_clusters),
+                topics_created,
+                topics_updated,
+                clusters_failed,
+                len(prunable),
+                surprise_adjusted,
+            )
+            get_plugin_manager().fire("on_consolidation_complete", report=report)
+            return report
+        finally:
+            if local_vs:
+                vs._save()
 
     except Exception as e:
         logger.exception("Consolidation failed: %s", e)
         complete_consolidation_run(run_id, status=RUN_STATUS_FAILED, error_message=str(e))
-        return {"status": "error", "message": str(e)}
+        return {
+            "status": "error",
+            "message": str(e),
+            "run_id": run_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "topics_created": 0,
+            "topics_updated": 0,
+            "episodes_pruned": 0,
+            "clusters_failed": 0,
+            "api_calls": 0,
+            "episodes_loaded": 0,
+            "episodes_with_vectors": 0,
+            "clusters_total": 0,
+            "clusters_valid": 0,
+            "surprise_adjusted": 0,
+            "failed_episode_ids": [],
+        }
 
 
 # ── Index update ──────────────────────────────────────────────────────────────

@@ -166,12 +166,23 @@ def close_all_connections() -> None:
 
 @contextmanager
 def get_connection():
+    """Yield a thread-local SQLite connection with commit/rollback.
+
+    Re-entrant: nested calls share the same connection and only the
+    outermost context manager commits or rolls back.
+    """
     conn = _get_cached_connection()
+    depth = getattr(_local, "conn_depth", 0)
+    _local.conn_depth = depth + 1
     try:
         yield conn
-        conn.commit()
+        _local.conn_depth -= 1
+        if _local.conn_depth == 0:
+            conn.commit()
     except Exception:
-        conn.rollback()
+        _local.conn_depth -= 1
+        if _local.conn_depth == 0:
+            conn.rollback()
         raise
 
 
@@ -311,9 +322,12 @@ def _apply_fts5_migration(conn: sqlite3.Connection) -> None:
             content
         )"""
     )
+    # Guard against duplicate inserts if migration re-runs
     conn.execute(
         """INSERT INTO episodes_fts(episode_id, content)
-           SELECT id, content FROM episodes WHERE deleted = 0"""
+           SELECT id, content FROM episodes
+           WHERE deleted = 0
+             AND id NOT IN (SELECT episode_id FROM episodes_fts)"""
     )
 
 
@@ -339,7 +353,8 @@ def insert_episode(
             (episode_id, now, now, content, content_type,
              json.dumps(tags or []), surprise_score, source_session),
         )
-    fts_insert(episode_id, content)
+        # FTS insert within the same transaction for atomicity
+        fts_insert(episode_id, content)
     return episode_id
 
 
@@ -421,9 +436,9 @@ def soft_delete_episode(episode_id: str) -> bool:
             "UPDATE episodes SET deleted = 1, updated_at = ? WHERE id = ? AND deleted = 0",
             (_now(), episode_id),
         )
-    deleted = bool(cursor.rowcount and cursor.rowcount > 0)
-    if deleted:
-        fts_delete(episode_id)
+        deleted = bool(cursor.rowcount and cursor.rowcount > 0)
+        if deleted:
+            fts_delete(episode_id)
     return deleted
 
 
@@ -437,9 +452,9 @@ def hard_delete_episode(episode_id: str) -> bool:
         cursor = conn.execute(
             "DELETE FROM episodes WHERE id = ?", (episode_id,)
         )
-    deleted = bool(cursor.rowcount and cursor.rowcount > 0)
-    if deleted:
-        fts_delete(episode_id)
+        deleted = bool(cursor.rowcount and cursor.rowcount > 0)
+        if deleted:
+            fts_delete(episode_id)
     return deleted
 
 

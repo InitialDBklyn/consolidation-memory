@@ -218,7 +218,8 @@ class PluginManager:
                 f"Unknown plugin hook {hook_name!r}. "
                 f"Valid hooks: {sorted(HOOK_NAMES)}"
             )
-        for plugin in self._plugins:
+        # Copy list to avoid issues if plugins are registered/unregistered during iteration
+        for plugin in list(self._plugins):
             method = getattr(plugin, hook_name, None)
             if method is None:
                 continue

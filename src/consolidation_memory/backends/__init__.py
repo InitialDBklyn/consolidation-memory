@@ -47,6 +47,8 @@ def retry_with_backoff(
     Raises:
         The last caught exception if all retries fail.
     """
+    if max_retries < 1:
+        raise ValueError(f"max_retries must be >= 1, got {max_retries}")
     last_err: Exception | None = None
     for attempt in range(max_retries):
         try:
@@ -187,6 +189,13 @@ def reset_backends() -> None:
     """Reset cached backends (for testing or config reload)."""
     global _embedding_backend, _llm_backend, _embed_circuit
     with _backend_lock:
+        # Close existing backends if they have a close method
+        for backend in (_embedding_backend, _llm_backend):
+            if backend is not None and hasattr(backend, "close"):
+                try:
+                    backend.close()
+                except Exception:
+                    pass
         _embedding_backend = None
         _llm_backend = None
         _embed_circuit = None

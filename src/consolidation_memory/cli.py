@@ -320,7 +320,7 @@ def cmd_consolidate():
     )
     from consolidation_memory.consolidation import run_consolidation
     result = run_consolidation()
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result, indent=2, default=str))
 
 
 def cmd_status():
@@ -598,7 +598,11 @@ def cmd_reindex():
     from consolidation_memory.backends import encode_documents, get_dimension
     from consolidation_memory.config import get_config
     from consolidation_memory.vector_store import VectorStore
-    import faiss
+    try:
+        import faiss
+    except ImportError:
+        print("Reindex requires faiss-cpu. Install with: pip install consolidation-memory[fastembed]")
+        sys.exit(1)
 
     cfg = get_config()
     ensure_schema()
