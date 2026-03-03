@@ -265,7 +265,7 @@ def _embedding_text_for_record(record: dict) -> str:
         return f"Preference {record.get('key', '')}: {record.get('value', '')}"
     elif rtype == "procedure":
         return f"Procedure: {record.get('trigger', '')} -> {record.get('steps', '')}"
-    return json.dumps(record)
+    return json.dumps(record, default=str)
 
 
 # ── Prompt builders ───────────────────────────────────────────────────────────
@@ -291,7 +291,7 @@ STRICT RULES:
 - Preserve specific details: file paths, version numbers, line numbers, command syntax, error messages.
 - Each record must be one of four types:
   * "fact": A static piece of information. Fields: "subject" (what it's about), "info" (the specific detail).
-  * "solution": A problem->fix pair. Fields: "problem" (what went wrong), "fix" (how to solve it), "context" (optional, when this applies).
+  * "solution": A problem->fix pair. Fields: "problem" (what went wrong), "fix" (HOW to solve it — include specific implementation details like function names, config changes, commands, code patterns; never just say "fixed it" or "ensured X"), "context" (optional, when this applies).
   * "preference": An explicitly stated user choice. Fields: "key" (what setting/choice), "value" (what they chose), "context" (optional, when/where).
   * "procedure": A repeated workflow or behavioral pattern. Fields: "trigger" (when/what situation activates this), "steps" (the sequence of actions taken), "context" (optional, scope or conditions). Extract procedures when episodes show the same workflow being followed multiple times or the user describes how they approach a task.
 - Do NOT invent preferences from facts. Only extract preferences when the user explicitly stated a choice.
@@ -323,6 +323,7 @@ STRICT RULES:
 - If new information contradicts existing, keep the NEWER (from NEW RECORDS).
 - Do NOT add commentary, advice, or inferences not present in either source.
 - Preserve all file paths, commands, version numbers, and error messages exactly.
+- For solution records, the "fix" field MUST describe HOW the problem was solved (specific implementation details, function names, config changes, commands) — never just "fixed it" or "ensured X".
 - Deduplicate: if two records convey the same information, keep only the better one.
 - Update the title and summary to cover the merged content. Keep the summary dense and factual.
 - Combine tags from both sets, deduplicated.
@@ -330,12 +331,12 @@ STRICT RULES:
 
 EXISTING RECORDS (title: "{_sanitize_for_prompt(existing_title)}"):
 Summary: {_sanitize_for_prompt(existing_summary)}
-Tags: {json.dumps(existing_tags)}
+Tags: {json.dumps(existing_tags, default=str)}
 Records:
-{_sanitize_for_prompt(json.dumps(existing_records, indent=2))}
+{_sanitize_for_prompt(json.dumps(existing_records, indent=2, default=str))}
 
 NEW RECORDS TO MERGE:
-{_sanitize_for_prompt(json.dumps(new_records, indent=2))}
+{_sanitize_for_prompt(json.dumps(new_records, indent=2, default=str))}
 
 Output this exact JSON structure:
 {{"title": "...", "summary": "...", "tags": [...], "records": [...]}}"""
@@ -357,8 +358,8 @@ def _build_contradiction_prompt(pairs: list[tuple[dict, dict]]) -> str:
     ]
     for i, (existing_rec, new_rec) in enumerate(pairs):
         lines.append(f"\nPair {i + 1}:")
-        lines.append(f"  EXISTING: {_sanitize_for_prompt(json.dumps(existing_rec))}")
-        lines.append(f"  NEW: {_sanitize_for_prompt(json.dumps(new_rec))}")
+        lines.append(f"  EXISTING: {_sanitize_for_prompt(json.dumps(existing_rec, default=str))}")
+        lines.append(f"  NEW: {_sanitize_for_prompt(json.dumps(new_rec, default=str))}")
 
     lines.append("\nOutput JSON array of verdicts:")
     return "\n".join(lines)
@@ -437,7 +438,7 @@ def _validate_extraction_output(
             elif rtype == "procedure" and (not rec.get("trigger") or not rec.get("steps")):
                 failures.append(f"Record {i}: procedure missing trigger or steps")
 
-    specifics_failure = _check_specifics_preservation(cluster_episodes, json.dumps(data))
+    specifics_failure = _check_specifics_preservation(cluster_episodes, json.dumps(data, default=str))
     if specifics_failure:
         failures.append(specifics_failure)
 

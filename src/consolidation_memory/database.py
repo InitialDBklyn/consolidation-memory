@@ -425,7 +425,7 @@ def mark_pruned(episode_ids: list[str]) -> None:
         placeholders = ",".join("?" for _ in episode_ids)
         conn.execute(
             f"""UPDATE episodes SET consolidated = 2, updated_at = ?
-                WHERE id IN ({placeholders})""",
+                WHERE id IN ({placeholders}) AND consolidated = 1""",
             [now] + episode_ids,
         )
 

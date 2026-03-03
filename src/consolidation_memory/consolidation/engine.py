@@ -354,7 +354,7 @@ def _merge_into_existing(
         silent_drops = _detect_silent_drops(pre_merge, merged_records)
         for drop_idx, max_sim in silent_drops:
             dropped_rec = pre_merge[drop_idx]
-            dropped_content = json.dumps(dropped_rec)
+            dropped_content = json.dumps(dropped_rec, default=str)
             insert_contradiction(
                 topic_id=existing["id"],
                 old_record_id=None,
@@ -685,7 +685,13 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
                 complete_consolidation_run(
                     run_id, status=RUN_STATUS_FAILED, error_message="No vectors in FAISS"
                 )
-                return {"status": "error", "message": "No vectors found"}
+                early_report_nv: ConsolidationReport = {
+                    "status": "error",
+                    "message": "No vectors found",
+                    "run_id": run_id,
+                }
+                get_plugin_manager().fire("on_consolidation_complete", report=early_report_nv)
+                return early_report_nv
 
             found_ids, vectors = batch_result
 
@@ -702,7 +708,9 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
                 complete_consolidation_run(
                     run_id, status=RUN_STATUS_COMPLETED, episodes_processed=1
                 )
-                return {"status": "too_few_episodes"}
+                early_report_fe: ConsolidationReport = {"status": "too_few_episodes"}
+                get_plugin_manager().fire("on_consolidation_complete", report=early_report_fe)
+                return early_report_fe
 
             condensed = squareform(dist_matrix, checks=False)
             Z = linkage(condensed, method="average")
@@ -871,7 +879,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
     except Exception as e:
         logger.exception("Consolidation failed: %s", e)
         complete_consolidation_run(run_id, status=RUN_STATUS_FAILED, error_message=str(e))
-        return {
+        error_report: ConsolidationReport = {
             "status": "error",
             "message": str(e),
             "run_id": run_id,
@@ -888,6 +896,8 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
             "surprise_adjusted": 0,
             "failed_episode_ids": [],
         }
+        get_plugin_manager().fire("on_consolidation_complete", report=error_report)
+        return error_report
 
 
 # ── Index update ──────────────────────────────────────────────────────────────

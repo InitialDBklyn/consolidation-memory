@@ -837,7 +837,7 @@ class MemoryClient:
         for rec in records:
             tid = rec["topic_id"]
             if tid not in records_by_topic:
-                records_by_topic[tid] = {"facts": 0, "solutions": 0, "preferences": 0, "procedures": 0}
+                records_by_topic[tid] = {"fact": 0, "solution": 0, "preference": 0, "procedure": 0}
             rt = rec.get("record_type", "fact")
             if rt in records_by_topic[tid]:
                 records_by_topic[tid][rt] += 1

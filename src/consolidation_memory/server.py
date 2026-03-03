@@ -340,6 +340,7 @@ async def memory_consolidation_log(last_n: int = 5) -> str:
     """
     try:
         client = _get_client()
+        last_n = max(1, min(last_n, 20))
         result = await asyncio.to_thread(client.consolidation_log, last_n)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
@@ -459,6 +460,9 @@ async def memory_read_topic(filename: str) -> str:
     """
     try:
         client = _get_client()
+        import re as _re
+        if _re.search(r"[/\\]|\.\.", filename):
+            return json.dumps({"error": "Invalid filename: must not contain '/', '\\', or '..'."})
         result = await asyncio.to_thread(client.read_topic, filename)
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:

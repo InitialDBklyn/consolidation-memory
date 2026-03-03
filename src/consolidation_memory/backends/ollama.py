@@ -91,6 +91,9 @@ class OllamaLLMBackend:
                     "options": {
                         "num_predict": self._max_tokens,
                         "temperature": self._temperature,
+                        "top_p": 1.0,
+                        "top_k": 0,
+                        "repeat_penalty": 1.0,
                     },
                 },
                 timeout=120.0,

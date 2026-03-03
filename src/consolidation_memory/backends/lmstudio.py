@@ -92,6 +92,11 @@ class LMStudioLLMBackend:
                     "max_tokens": self._max_tokens,
                     "temperature": self._temperature,
                     "min_p": self._min_p,
+                    "top_p": 1.0,
+                    "top_k": 0,
+                    "repeat_penalty": 1.0,
+                    "frequency_penalty": 0.0,
+                    "presence_penalty": 0.0,
                 },
                 timeout=120.0,
             )

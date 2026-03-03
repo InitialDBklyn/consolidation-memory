@@ -1056,7 +1056,7 @@ class TestDatabaseExport:
     def test_get_all_active_episodes(self):
         from consolidation_memory.database import (
             ensure_schema, insert_episode, get_all_active_episodes,
-            mark_pruned, soft_delete_episode,
+            mark_pruned, mark_consolidated, soft_delete_episode,
         )
         ensure_schema()
 
@@ -1064,6 +1064,7 @@ class TestDatabaseExport:
         id2 = insert_episode(content="Will prune", tags=[])
         id3 = insert_episode(content="Will delete", tags=[])
 
+        mark_consolidated([id2], "test_topic.md")
         mark_pruned([id2])
         soft_delete_episode(id3)
 

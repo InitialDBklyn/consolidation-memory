@@ -26,6 +26,7 @@ Usage with any OpenAI-compatible client::
 from __future__ import annotations
 
 import dataclasses
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -561,6 +562,8 @@ def dispatch_tool_call(
         ``{"error": "<message>"}`` instead of raising.
     """
     _MAX_CONTENT_LENGTH = 50_000
+    _MAX_BATCH_SIZE = 100
+    _UNSAFE_FILENAME_RE = re.compile(r"[/\\]|\.\.")
 
     try:
         if name == "memory_store":
@@ -581,13 +584,19 @@ def dispatch_tool_call(
             return dataclasses.asdict(store_result)
 
         elif name == "memory_store_batch":
-            batch_result = client.store_batch(episodes=arguments["episodes"])
+            episodes = arguments["episodes"]
+            if len(episodes) > _MAX_BATCH_SIZE:
+                return {
+                    "error": f"Batch size {len(episodes)} exceeds maximum of {_MAX_BATCH_SIZE}"
+                }
+            batch_result = client.store_batch(episodes=episodes)
             return dataclasses.asdict(batch_result)
 
         elif name == "memory_recall":
+            n_results = max(1, min(arguments.get("n_results", 10), 50))
             recall_result = client.recall(
                 query=arguments["query"],
-                n_results=arguments.get("n_results", 10),
+                n_results=n_results,
                 include_knowledge=arguments.get("include_knowledge", True),
                 content_types=arguments.get("content_types"),
                 tags=arguments.get("tags"),
@@ -605,7 +614,7 @@ def dispatch_tool_call(
                 tags=arguments.get("tags"),
                 after=arguments.get("after"),
                 before=arguments.get("before"),
-                limit=arguments.get("limit", 20),
+                limit=min(arguments.get("limit", 20), 50),
             )
             return dataclasses.asdict(search_result)
 
@@ -634,7 +643,9 @@ def dispatch_tool_call(
 
         elif name == "memory_consolidate":
             consolidate_result = client.consolidate()
-            return dict(consolidate_result)
+            if isinstance(consolidate_result, dict):
+                return consolidate_result
+            return dataclasses.asdict(consolidate_result)
 
         elif name == "memory_protect":
             protect_result = client.protect(
@@ -658,7 +669,10 @@ def dispatch_tool_call(
             return dataclasses.asdict(browse_result)
 
         elif name == "memory_read_topic":
-            read_topic_result = client.read_topic(filename=arguments["filename"])
+            filename = arguments["filename"]
+            if _UNSAFE_FILENAME_RE.search(filename):
+                return {"error": "Invalid filename: must not contain '/', '\\', or '..'"}
+            read_topic_result = client.read_topic(filename=filename)
             return dataclasses.asdict(read_topic_result)
 
         elif name == "memory_decay_report":
@@ -667,7 +681,7 @@ def dispatch_tool_call(
 
         elif name == "memory_consolidation_log":
             log_result = client.consolidation_log(
-                last_n=arguments.get("last_n", 5),
+                last_n=max(1, min(arguments.get("last_n", 5), 20)),
             )
             return dataclasses.asdict(log_result)
 
