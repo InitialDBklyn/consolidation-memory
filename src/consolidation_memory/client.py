@@ -80,7 +80,9 @@ class MemoryClient:
         self._consolidation_pool: ThreadPoolExecutor | None = None
 
         # Shared executor for LLM calls (e.g. correct())
-        self._llm_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="llm")
+        self._llm_executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="llm"
+        )
 
         # Cached backend probe result: (is_reachable, timestamp)
         self._probe_cache: tuple[bool, float] | None = None
@@ -380,7 +382,7 @@ class MemoryClient:
             pm = get_plugin_manager()
             for res in results:
                 if res.get("status") == "stored" and "id" in res:
-                    eid = res["id"]
+                    eid = str(res["id"])
                     if eid in stored_items_by_id:
                         item = stored_items_by_id[eid]
                         pm.fire(
@@ -742,6 +744,8 @@ class MemoryClient:
         )
 
         try:
+            if self._llm_executor is None:
+                return CorrectResult(status="error", message="Client is closed.")
             future = self._llm_executor.submit(llm.generate, system_prompt, user_prompt)
             raw = future.result(timeout=cfg.LLM_CORRECTION_TIMEOUT)
             corrected = _normalize_output(raw)
