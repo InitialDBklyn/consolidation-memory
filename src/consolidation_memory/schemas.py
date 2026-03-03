@@ -644,7 +644,7 @@ def dispatch_tool_call(
         elif name == "memory_consolidate":
             consolidate_result = client.consolidate()
             if isinstance(consolidate_result, dict):
-                return consolidate_result
+                return dict(consolidate_result)
             return dataclasses.asdict(consolidate_result)
 
         elif name == "memory_protect":
