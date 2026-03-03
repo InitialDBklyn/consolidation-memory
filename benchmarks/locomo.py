@@ -41,12 +41,25 @@ MEM0_REF = {
 }
 
 
+def _limit_qa_for_dry_run(qa_pairs: list[dict]) -> list[dict]:
+    """In dry-run, keep at most 3 QA pairs per category."""
+    from collections import defaultdict
+    by_cat: dict[str, list[dict]] = defaultdict(list)
+    for qa in qa_pairs:
+        by_cat[qa["category_name"]].append(qa)
+    result = []
+    for items in by_cat.values():
+        result.extend(items[:3])
+    return result
+
+
 def run_memory_mode(
     dataset: list[dict],
     openai_client: OpenAI,
     mode: str,
     model: str,
     results_dir: Path,
+    dry_run: bool = False,
 ) -> dict:
     """Run a memory-based mode (full or episodes-only).
 
@@ -94,6 +107,8 @@ def run_memory_mode(
 
                 # Answer questions
                 qa_pairs = get_qa_pairs(conversation)
+                if dry_run:
+                    qa_pairs = _limit_qa_for_dry_run(qa_pairs)
                 logger.info("  Answering %d questions...", len(qa_pairs))
 
                 for qa_idx, qa in enumerate(qa_pairs):
@@ -132,6 +147,7 @@ def run_full_context(
     dataset: list[dict],
     openai_client: OpenAI,
     model: str,
+    dry_run: bool = False,
 ) -> dict:
     """Run the full-context baseline — no memory system."""
     all_predictions = []
@@ -146,6 +162,8 @@ def run_full_context(
 
         transcript = build_transcript(conversation)
         qa_pairs = get_qa_pairs(conversation)
+        if dry_run:
+            qa_pairs = _limit_qa_for_dry_run(qa_pairs)
 
         for qa_idx, qa in enumerate(qa_pairs):
             predicted = answer_full_context(
@@ -265,6 +283,17 @@ def main() -> None:
         action="store_true",
         help="Enable debug logging",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Quick validation: 1 conversation, max 5 QA pairs per category",
+    )
+    parser.add_argument(
+        "--conversations", "-n",
+        type=int,
+        default=0,
+        help="Limit to first N conversations (0 = all)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -275,6 +304,14 @@ def main() -> None:
 
     # Load dataset
     dataset = load_dataset(args.data_dir)
+
+    # Limit conversations for dry-run or --conversations
+    if args.dry_run:
+        dataset = dataset[:1]
+        logger.info("DRY RUN: limited to 1 conversation")
+    elif args.conversations > 0:
+        dataset = dataset[:args.conversations]
+        logger.info("Limited to %d conversation(s)", len(dataset))
 
     # Initialize OpenAI client
     openai_client = OpenAI()  # Uses OPENAI_API_KEY env var
@@ -293,9 +330,12 @@ def main() -> None:
         logger.info("=== Running mode: %s ===", mode)
 
         if mode == "full-context":
-            result = run_full_context(dataset, openai_client, args.model)
+            result = run_full_context(dataset, openai_client, args.model, dry_run=args.dry_run)
         else:
-            result = run_memory_mode(dataset, openai_client, mode, args.model, args.results_dir)
+            result = run_memory_mode(
+                dataset, openai_client, mode, args.model, args.results_dir,
+                dry_run=args.dry_run,
+            )
 
         elapsed = time.monotonic() - mode_start
         result["elapsed_seconds"] = round(elapsed, 1)

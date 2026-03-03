@@ -6,26 +6,28 @@ import logging
 
 from openai import OpenAI
 
+from benchmarks.ingestion import _iter_sessions
 from benchmarks.prompts import FULL_CONTEXT_SYSTEM, FULL_CONTEXT_USER
 
 logger = logging.getLogger("benchmark.baselines")
 
 
 def build_transcript(conversation: dict) -> str:
-    """Build a full text transcript from a conversation."""
+    """Build a full text transcript from a conversation.
+
+    LoCoMo format: conversation["conversation"] is a dict with
+    session_N / session_N_date_time keys.
+    """
     lines = []
-    for session in conversation.get("conversation", []):
-        session_date = session.get("date", session.get("session_date", ""))
-        session_time = session.get("time", session.get("session_time", ""))
-        timestamp = f"{session_date} {session_time}".strip() if session_date else ""
+    conv_data = conversation.get("conversation", {})
 
-        if timestamp:
-            lines.append(f"\n--- Session: {timestamp} ---\n")
+    for session_num, date_time, turns in _iter_sessions(conv_data):
+        if date_time:
+            lines.append(f"\n--- Session {session_num}: {date_time} ---\n")
 
-        turns = session.get("turns", session.get("dialogue", []))
         for turn in turns:
-            speaker = turn.get("speaker", turn.get("role", "Unknown"))
-            text = turn.get("text", turn.get("content", turn.get("utterance", "")))
+            speaker = turn.get("speaker", "Unknown")
+            text = turn.get("text", "")
             if text:
                 lines.append(f"{speaker}: {text}")
 

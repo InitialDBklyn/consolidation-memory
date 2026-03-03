@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger("benchmark.ingestion")
@@ -35,17 +36,33 @@ def load_dataset(data_path: Path) -> list[dict]:
 
 
 def get_speakers(conversation: dict) -> tuple[str, str]:
-    """Extract the two speaker names from a conversation."""
-    speakers = set()
-    for session in conversation.get("conversation", []):
-        for turn in session.get("turns", session.get("dialogue", [])):
-            speaker = turn.get("speaker", turn.get("role", ""))
-            if speaker:
-                speakers.add(speaker)
-    speakers = sorted(speakers)
-    if len(speakers) >= 2:
-        return speakers[0], speakers[1]
-    return "Speaker A", "Speaker B"
+    """Extract the two speaker names from a conversation.
+
+    LoCoMo format: conversation["conversation"] is a dict with
+    "speaker_a" and "speaker_b" keys.
+    """
+    conv_data = conversation.get("conversation", {})
+    speaker_a = conv_data.get("speaker_a", "Speaker A")
+    speaker_b = conv_data.get("speaker_b", "Speaker B")
+    return speaker_a, speaker_b
+
+
+def _iter_sessions(conv_data: dict):
+    """Yield (session_number, date_time_str, turns_list) for each session.
+
+    LoCoMo format: sessions are keyed as session_1, session_2, ...
+    with corresponding session_1_date_time, session_2_date_time, ...
+    """
+    # Find all session keys (session_N where N is a number)
+    session_nums = sorted(
+        int(m.group(1))
+        for key in conv_data
+        if (m := re.match(r"^session_(\d+)$", key))
+    )
+    for n in session_nums:
+        turns = conv_data.get(f"session_{n}", [])
+        date_time = conv_data.get(f"session_{n}_date_time", "")
+        yield n, date_time, turns
 
 
 def ingest_conversation(
@@ -61,36 +78,32 @@ def ingest_conversation(
         Number of episodes ingested.
     """
     count = 0
-    sessions = conversation.get("conversation", [])
+    conv_data = conversation.get("conversation", {})
 
-    for session_idx, session in enumerate(sessions):
-        session_date = session.get("date", session.get("session_date", ""))
-        session_time = session.get("time", session.get("session_time", ""))
-        timestamp = f"{session_date} {session_time}".strip() if session_date else ""
-
-        turns = session.get("turns", session.get("dialogue", []))
-        for i, turn in enumerate(turns):
-            speaker = turn.get("speaker", turn.get("role", None))
+    for session_num, date_time, turns in _iter_sessions(conv_data):
+        for turn in turns:
+            speaker = turn.get("speaker")
             if speaker is None:
-                logger.warning("Turn %d in session %d missing speaker/role field, defaulting to 'Unknown'", i, session_idx)
+                logger.warning(
+                    "Turn in session %d missing speaker field, defaulting to 'Unknown'",
+                    session_num,
+                )
                 speaker = "Unknown"
-            text = turn.get("text", turn.get("content", turn.get("utterance", None)))
-            if text is None:
-                logger.warning("Turn %d in session %d missing text/content/utterance field, skipping", i, session_idx)
-                continue
+
+            text = turn.get("text", "")
             if not text:
                 continue
 
             # Prepend timestamp for temporal question answering
-            if timestamp:
-                content = f"[{timestamp}] {speaker}: {text}"
+            if date_time:
+                content = f"[{date_time}] {speaker}: {text}"
             else:
                 content = f"{speaker}: {text}"
 
             client.store(
                 content=content,
                 content_type="exchange",
-                tags=[sample_id, f"session_{session_idx}"],
+                tags=[sample_id, f"session_{session_num}"],
                 surprise=0.5,
             )
             count += 1
@@ -105,10 +118,9 @@ def get_qa_pairs(conversation: dict) -> list[dict]:
     Returns list of dicts with keys: question, answer, category (int), category_name (str).
     """
     pairs = []
-    for qa in conversation.get("qa_pairs", conversation.get("questions", [])):
-        category = qa.get("category", qa.get("type", 0))
+    for qa in conversation.get("qa", []):
+        category = qa.get("category", 0)
         if isinstance(category, str):
-            # Try to parse category from string
             for k, v in CATEGORY_MAP.items():
                 if v == category.lower():
                     category = k
@@ -120,8 +132,13 @@ def get_qa_pairs(conversation: dict) -> list[dict]:
         if category == 5:  # Skip adversarial
             continue
 
-        question = qa.get("question", qa.get("query", ""))
-        answer = qa.get("answer", qa.get("gold_answer", ""))
+        question = qa.get("question", "")
+        answer = qa.get("answer", "")
+
+        # Some answers are ints (e.g., 2022) — convert to string
+        if isinstance(answer, (int, float)):
+            answer = str(answer)
+
         if not question or not answer:
             continue
 

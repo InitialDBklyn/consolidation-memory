@@ -1,6 +1,34 @@
 # Changelog
 
-## 0.12.1 � 2026-03-02
+## 0.12.2 — 2026-03-02
+
+Temporal belief queries, shared utils, and code quality improvements.
+
+### Features
+
+- **Temporal belief queries** (Phase 3.4) — `as_of` parameter on `recall()` across all API surfaces (MCP, REST, OpenAI schemas, Python client). When set, recall returns only records and episodes that were valid at that point in time, enabling questions like "what did I know about X last month?"
+- **`EVOLVING_TOPIC_LOOKBACK_DAYS` config field** — the 30-day lookback window for "evolving topic" signals is now configurable via `[retrieval]` in TOML instead of hardcoded
+
+### Refactoring
+
+- **Shared `utils` module** — extracted `parse_json_list()` and `parse_datetime()` into `src/consolidation_memory/utils.py`, replacing duplicated patterns across 15 call sites in 8 modules
+- **Content-type validation deduplication** — extracted `_normalize_content_type()` in `client.py`, shared between `store()` and `store_batch()`
+- **Code-fence stripping deduplication** — consolidated duplicate `_strip_code_fences` implementations into a single reused helper
+- **`RunStatus` Literal type** — added `RunStatus` type and `RUN_STATUS_RUNNING` / `RUN_STATUS_COMPLETED` / `RUN_STATUS_FAILED` constants in `types.py`, replacing raw status strings across `database.py`, `engine.py`, and `client.py`
+- **Plugin hook name validation** — `fire()` in `plugins.py` now validates against a `HOOK_NAMES` frozenset, raising `ValueError` on typos instead of silently doing nothing
+- **Magic number replaced** — hardcoded contradictions-per-run estimate in `consolidation_log()` replaced with `_CONTRADICTIONS_PER_RUN_ESTIMATE` named constant
+- **Redundant `len()` guards simplified** — removed 3 unnecessary `len(prunable) if prunable else 0` patterns in `engine.py`
+
+### Bug Fixes
+
+- **mypy fixes** — `ThreadPoolExecutor | None` typing corrected across modules
+- **CI fix** — REST API tests now skip gracefully when `fastapi` is not installed
+
+### Internal
+
+- 524 tests (30 new: 23 for temporal belief queries in `test_temporal_belief_queries.py`, 7 for shared utils in `test_utils.py`)
+
+## 0.12.1 — 2026-03-02
 
 
 ## 0.12.0 — 2026-03-02

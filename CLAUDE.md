@@ -43,7 +43,7 @@ pip install -e ".[all,dev]"
 python -m pytest tests/ -v
 ```
 
-Run the full suite before any commit. All 471+ tests must pass.
+Run the full suite before any commit. All 524+ tests must pass.
 
 ### Linting
 
@@ -134,7 +134,7 @@ Release when a meaningful milestone lands — a feature, a noteworthy bug fix, o
 ## Roadmap
 
 See `.claude/ROADMAP.md` for the implementation roadmap.
-**Current focus: Phase 3 (Belief Provenance & Trust). Next up: 3.4 Temporal belief queries.**
+**Phase 3 (Belief Provenance & Trust) is complete. Current focus: Phase 4 (Adaptive Memory). Next up: 4.2 Access-weighted recall ranking.**
 
 When asked to "continue the roadmap", read that file and implement the next
 incomplete item. Commit after each feature. Run the full test suite before committing.
