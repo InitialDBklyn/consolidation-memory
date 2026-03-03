@@ -6,7 +6,6 @@ cluster processing, the run_consolidation entry point, and index updating.
 
 import json
 import logging
-import re
 import shutil
 import time
 from collections import Counter
@@ -54,6 +53,7 @@ from consolidation_memory.consolidation.prompting import (
     _parse_frontmatter,
     _render_markdown_from_records,
     _slugify,
+    _strip_code_fences,
 )
 from consolidation_memory.consolidation.scoring import _adjust_surprise_scores
 from consolidation_memory.plugins import get_plugin_manager
@@ -184,10 +184,7 @@ def _detect_contradictions(
 
     try:
         raw = _call_llm(prompt, max_retries=2)
-        raw = raw.strip()
-        raw = re.sub(r"^```(?:json)?\s*\n?", "", raw)
-        raw = re.sub(r"\n?```\s*$", "", raw)
-        verdicts = json.loads(raw.strip())
+        verdicts = json.loads(_strip_code_fences(raw))
     except Exception as e:
         logger.warning("LLM contradiction verification failed: %s", e)
         return []
@@ -377,6 +374,7 @@ def _merge_into_existing(
 
     # Log contradictions to audit log before expiring
     existing_by_id = {r["id"]: r for r in existing_db_records}
+    pm = get_plugin_manager()
     for new_idx, ex_id in contradictions:
         old_rec = existing_by_id.get(ex_id, {})
         old_content = old_rec.get("content", "")
@@ -392,7 +390,7 @@ def _merge_into_existing(
                 new_content=new_content,
                 resolution="expired_old",
             )
-            get_plugin_manager().fire(
+            pm.fire(
                 "on_contradiction",
                 topic_filename=existing["filename"],
                 old_content=old_content,

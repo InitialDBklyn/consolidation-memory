@@ -200,9 +200,7 @@ def create_app() -> FastAPI:
     @app.post("/memory/consolidate")
     async def consolidate():
         """Run consolidation manually."""
-        import json
-        result = _require_client().consolidate()
-        return json.loads(json.dumps({"status": "completed", "report": result}, default=str))
+        return _require_client().consolidate()
 
     @app.post("/memory/correct")
     async def correct(req: CorrectRequest):

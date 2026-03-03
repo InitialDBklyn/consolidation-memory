@@ -153,8 +153,8 @@ def _call_llm(prompt: str, max_retries: int = 3) -> str:
 
 def _strip_code_fences(text: str) -> str:
     text = text.strip()
-    text = re.sub(r"^```(?:ya?ml|markdown|md)?\s*\n", "", text)
-    text = re.sub(r"\n```\s*$", "", text)
+    text = re.sub(r"^```(?:json|ya?ml|markdown|md)?\s*\n?", "", text)
+    text = re.sub(r"\n?```\s*$", "", text)
     return text.strip()
 
 
