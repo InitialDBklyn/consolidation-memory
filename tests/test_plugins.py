@@ -130,10 +130,12 @@ class TestPluginManager:
         assert p1.calls[0] == ("on_forget", {"episode_id": "abc-123"})
         assert len(p2.calls) == 1
 
-    def test_fire_unknown_hook_is_noop(self):
+    def test_fire_unknown_hook_raises(self):
+        import pytest
         mgr = PluginManager()
         mgr.register(TrackingPlugin())
-        mgr.fire("on_nonexistent_hook", x=1)  # should not raise
+        with pytest.raises(ValueError, match="Unknown plugin hook"):
+            mgr.fire("on_nonexistent_hook", x=1)
 
     def test_fire_exception_isolation(self):
         """One plugin raising should not prevent other plugins from firing."""

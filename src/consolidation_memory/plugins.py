@@ -33,6 +33,23 @@ logger = logging.getLogger(__name__)
 # Entry-point group name
 _EP_GROUP = "consolidation_memory.plugins"
 
+# Valid hook names — derived from PluginBase methods.
+# fire() validates against this set to catch typos at dev time rather than
+# silently dropping events via getattr(..., None).
+HOOK_NAMES: frozenset[str] = frozenset({
+    "on_startup",
+    "on_shutdown",
+    "on_store",
+    "on_recall",
+    "on_forget",
+    "on_consolidation_start",
+    "on_topic_created",
+    "on_topic_updated",
+    "on_contradiction",
+    "on_consolidation_complete",
+    "on_prune",
+})
+
 
 # ── Plugin base class ────────────────────────────────────────────────────────
 
@@ -190,7 +207,17 @@ class PluginManager:
 
         Per-plugin exceptions are caught and logged — one failing plugin
         does not block the others.
+
+        Raises:
+            ValueError: If *hook_name* is not a recognized hook. This
+                catches typos at development time instead of silently
+                dropping events.
         """
+        if hook_name not in HOOK_NAMES:
+            raise ValueError(
+                f"Unknown plugin hook {hook_name!r}. "
+                f"Valid hooks: {sorted(HOOK_NAMES)}"
+            )
         for plugin in self._plugins:
             method = getattr(plugin, hook_name, None)
             if method is None:

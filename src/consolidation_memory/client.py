@@ -22,7 +22,10 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from datetime import datetime, timezone
 
 from consolidation_memory import __version__
+from consolidation_memory.utils import parse_datetime, parse_json_list
 from consolidation_memory.types import (
+    RUN_STATUS_FAILED,
+    RUN_STATUS_RUNNING,
     ContentType,
     ConsolidationLogResult,
     ConsolidationReport,
@@ -45,6 +48,19 @@ from consolidation_memory.types import (
 )
 
 logger = logging.getLogger("consolidation_memory")
+
+
+def _normalize_content_type(ct: str) -> str:
+    """Validate and normalize a content_type string.
+
+    Returns the value unchanged if it is a valid ContentType, otherwise
+    logs a warning and falls back to ``'exchange'``.
+    """
+    _valid_types = {t.value for t in ContentType}
+    if ct in _valid_types:
+        return ct
+    logger.warning("Invalid content_type %r, defaulting to 'exchange'", ct)
+    return ContentType.EXCHANGE.value
 
 
 class MemoryClient:
@@ -188,11 +204,7 @@ class MemoryClient:
                 else:
                     break  # Results are sorted by similarity; no point checking lower ones
 
-        # Validate content_type
-        valid_types = {ct.value for ct in ContentType}
-        if content_type not in valid_types:
-            logger.warning("Invalid content_type %r, defaulting to 'exchange'", content_type)
-            content_type = ContentType.EXCHANGE.value
+        content_type = _normalize_content_type(content_type)
 
         episode_id = insert_episode(
             content=content,
@@ -271,12 +283,9 @@ class MemoryClient:
         self._vector_store.reload_if_stale()
 
         # Validate and normalize
-        valid_types = {ct.value for ct in ContentType}
         items = []
         for ep in episodes:
-            ct = ep.get("content_type", "exchange")
-            if ct not in valid_types:
-                ct = ContentType.EXCHANGE.value
+            ct = _normalize_content_type(ep.get("content_type", "exchange"))
             items.append({
                 "content": ep["content"],
                 "content_type": ct,
@@ -512,12 +521,11 @@ class MemoryClient:
 
         episodes = []
         for ep in results:
-            ep_tags = json.loads(ep["tags"]) if isinstance(ep["tags"], str) else ep["tags"]
             episodes.append({
                 "id": ep["id"],
                 "content": ep["content"],
                 "content_type": ep["content_type"],
-                "tags": ep_tags,
+                "tags": parse_json_list(ep["tags"]),
                 "created_at": ep["created_at"],
                 "surprise_score": ep["surprise_score"],
                 "access_count": ep["access_count"],
@@ -1063,8 +1071,10 @@ class MemoryClient:
                 message="No consolidation runs yet.",
             )
 
-        # Fetch enough contradictions to cover all requested runs
-        contradictions = db_get_contradictions(limit=last_n * 50)
+        # Heuristic: each consolidation run typically produces up to ~50
+        # contradictions, so we over-fetch to avoid missing any.
+        _CONTRADICTIONS_PER_RUN_ESTIMATE = 50
+        contradictions = db_get_contradictions(limit=last_n * _CONTRADICTIONS_PER_RUN_ESTIMATE)
 
         entries = []
         for run in runs:
@@ -1102,9 +1112,9 @@ class MemoryClient:
                 parts.append(f"processed {ep} episode{'s' if ep != 1 else ''}")
 
             summary = ", ".join(parts) if parts else "no changes"
-            if status == "failed":
+            if status == RUN_STATUS_FAILED:
                 summary = f"FAILED — {run.get('error_message') or 'unknown error'}"
-            elif status == "running":
+            elif status == RUN_STATUS_RUNNING:
                 summary = "In progress"
             else:
                 summary = summary[0].upper() + summary[1:] if summary else summary
@@ -1279,7 +1289,7 @@ class MemoryClient:
             )
 
         if last_run:
-            if last_run.get("status") == "failed":
+            if last_run.get("status") == RUN_STATUS_FAILED:
                 issues.append(
                     f"Last consolidation failed: {last_run.get('error_message', 'unknown')}"
                 )
@@ -1287,9 +1297,7 @@ class MemoryClient:
             if completed_at and isinstance(completed_at, str):
                 from datetime import datetime, timezone
                 try:
-                    last_time = datetime.fromisoformat(completed_at)
-                    if last_time.tzinfo is None:
-                        last_time = last_time.replace(tzinfo=timezone.utc)
+                    last_time = parse_datetime(completed_at)
                     age_hours = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600
                     if age_hours > interval_hours * 2:
                         issues.append(

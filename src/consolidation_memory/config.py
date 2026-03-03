@@ -236,6 +236,9 @@ class Config:
     RECORDS_RELEVANCE_THRESHOLD: float = 0.3
     RECORDS_MAX_RESULTS: int = 15
 
+    # ── Uncertainty signaling ────────────────────────────────────────────
+    EVOLVING_TOPIC_LOOKBACK_DAYS: int = 30
+
     # ── Recall deduplication ──────────────────────────────────────────────
     RECALL_DEDUP_ENABLED: bool = True
 
@@ -453,6 +456,7 @@ def _build_config(
         RECORDS_KEYWORD_WEIGHT=float(_retrieval.get("records_keyword_weight", 0.1)),
         RECORDS_RELEVANCE_THRESHOLD=float(_retrieval.get("records_relevance_threshold", 0.3)),
         RECORDS_MAX_RESULTS=int(_retrieval.get("records_max_results", 15)),
+        EVOLVING_TOPIC_LOOKBACK_DAYS=int(_retrieval.get("evolving_topic_lookback_days", 30)),
         RECALL_DEDUP_ENABLED=bool(_retrieval.get("recall_dedup_enabled", True)),
         # Plugins
         PLUGINS_ENABLED=list(_plugins.get("enabled", [])),

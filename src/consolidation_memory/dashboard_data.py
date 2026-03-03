@@ -10,6 +10,7 @@ import json
 
 from consolidation_memory.config import get_config as _get_config
 from consolidation_memory.database import ensure_schema, get_connection
+from consolidation_memory.utils import parse_json_list
 
 
 class DashboardData:
@@ -63,8 +64,7 @@ class DashboardData:
             r["content_preview"] = (
                 content[:80] + "..." if len(content) > 80 else content
             )
-            tags_raw = r["tags"]
-            r["tags"] = json.loads(tags_raw) if isinstance(tags_raw, str) else tags_raw
+            r["tags"] = parse_json_list(r["tags"])
             results.append(r)
         return results
 
@@ -78,9 +78,7 @@ class DashboardData:
         results = []
         for row in rows:
             r = dict(row)
-            src = r.get("source_episodes", "[]")
-            episodes = json.loads(src) if isinstance(src, str) else src
-            r["source_episode_count"] = len(episodes)
+            r["source_episode_count"] = len(parse_json_list(r.get("source_episodes")))
             results.append(r)
         return results
 

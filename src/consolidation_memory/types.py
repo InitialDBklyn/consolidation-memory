@@ -7,6 +7,16 @@ from enum import Enum
 from typing import Any, Literal, TypedDict
 
 
+# ── Consolidation run status values ─────────────────────────────────────────
+# These match the strings stored in the consolidation_runs.status DB column.
+
+RunStatus = Literal["running", "completed", "failed"]
+
+RUN_STATUS_RUNNING: RunStatus = "running"
+RUN_STATUS_COMPLETED: RunStatus = "completed"
+RUN_STATUS_FAILED: RunStatus = "failed"
+
+
 class ContentType(str, Enum):
     """Valid episode content types."""
     EXCHANGE = "exchange"

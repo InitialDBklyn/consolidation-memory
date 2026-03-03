@@ -30,6 +30,10 @@ _LAZY_IMPORTS = {
     "ContradictionResult": "consolidation_memory.types",
     "ContentType": "consolidation_memory.types",
     "RecordType": "consolidation_memory.types",
+    "RunStatus": "consolidation_memory.types",
+    "RUN_STATUS_RUNNING": "consolidation_memory.types",
+    "RUN_STATUS_COMPLETED": "consolidation_memory.types",
+    "RUN_STATUS_FAILED": "consolidation_memory.types",
 }
 
 __all__ = ["__version__", *_LAZY_IMPORTS]

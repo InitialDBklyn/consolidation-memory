@@ -19,6 +19,7 @@ import sys
 import tempfile
 
 from consolidation_memory import __version__
+from consolidation_memory.utils import parse_json_list
 
 
 def cmd_serve(args):
@@ -509,13 +510,7 @@ def cmd_import(path: str):
             skipped += 1
             continue
 
-        raw_tags = ep.get("tags")
-        if raw_tags is None:
-            tags = []
-        elif isinstance(raw_tags, str):
-            tags = json.loads(raw_tags)
-        else:
-            tags = raw_tags
+        tags = parse_json_list(ep.get("tags"))
         episode_id = insert_episode(
             content=ep["content"],
             content_type=ep.get("content_type", "exchange"),
@@ -552,7 +547,7 @@ def cmd_import(path: str):
                 continue
             filepath.write_text(topic["file_content"], encoding="utf-8")
 
-        source_eps = json.loads(topic["source_episodes"]) if isinstance(topic["source_episodes"], str) else topic["source_episodes"]
+        source_eps = parse_json_list(topic["source_episodes"])
         upsert_knowledge_topic(
             filename=topic["filename"],
             title=topic["title"],
@@ -579,7 +574,7 @@ def cmd_import(path: str):
                     "embedding_text": rec.get("embedding_text", ""),
                     "confidence": rec.get("confidence", 0.8),
                 }],
-                source_episodes=json.loads(rec["source_episodes"]) if isinstance(rec.get("source_episodes"), str) else rec.get("source_episodes", []),
+                source_episodes=parse_json_list(rec.get("source_episodes")),
             )
             r_imported += 1
         except Exception as e:

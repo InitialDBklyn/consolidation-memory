@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from consolidation_memory.config import get_config as _get_config
-from consolidation_memory.types import StatsDict
+from consolidation_memory.types import RUN_STATUS_COMPLETED, RunStatus, StatsDict
+from consolidation_memory.utils import parse_json_list
 
 logger = logging.getLogger(__name__)
 
@@ -1066,7 +1067,7 @@ def complete_consolidation_run(
     topics_created: int = 0,
     topics_updated: int = 0,
     episodes_pruned: int = 0,
-    status: str = "completed",
+    status: RunStatus = RUN_STATUS_COMPLETED,
     error_message: str | None = None,
 ) -> None:
     with get_connection() as conn:
@@ -1341,7 +1342,7 @@ def search_episodes(
         ep = dict(row)
         # Tag filtering in Python since tags are stored as JSON array string
         if tags:
-            ep_tags = json.loads(ep["tags"]) if isinstance(ep["tags"], str) else ep["tags"]
+            ep_tags = parse_json_list(ep["tags"])
             if not set(tags).intersection(ep_tags):
                 continue
         results.append(ep)

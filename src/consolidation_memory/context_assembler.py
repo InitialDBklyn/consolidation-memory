@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 from consolidation_memory.config import get_config
+from consolidation_memory.utils import parse_datetime, parse_json_list
 from consolidation_memory.database import (
     fts_available,
     fts_search,
@@ -41,17 +42,6 @@ _EVOLVING_TOPIC_WARNING = "Evolving — this topic has had recent contradictions
 logger = logging.getLogger(__name__)
 
 
-def _parse_tags(tags_value: str | list) -> list:
-    """Parse tags from DB storage format (JSON string or already-parsed list)."""
-    if isinstance(tags_value, str):
-        try:
-            parsed: list = json.loads(tags_value)
-            return parsed
-        except (json.JSONDecodeError, ValueError):
-            return []
-    return tags_value if tags_value is not None else []
-
-
 def invalidate_topic_cache() -> None:
     """Call after consolidation to force re-embedding on next recall."""
     topic_cache.invalidate()
@@ -68,10 +58,7 @@ def _recency_decay(created_at_iso: str, half_life_days: float | None = None) -> 
     if half_life_days is None:
         half_life_days = get_config().RECENCY_HALF_LIFE_DAYS
     try:
-        created = datetime.fromisoformat(created_at_iso)
-        # Handle naive datetimes (no timezone info) by assuming UTC
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
+        created = parse_datetime(created_at_iso)
         age_days = (datetime.now(timezone.utc) - created).total_seconds() / 86400.0
         # Clamp to non-negative to prevent >1.0 scores from future-dated episodes
         age_days = max(0.0, age_days)
@@ -109,7 +96,7 @@ def _apply_cooccurrence_boost(
     all_tags: set[str] = set()
     episode_tags: list[list[str]] = []
     for ep, _, _, _ in scored:
-        ep_tags = _parse_tags(ep.get("tags", "[]"))
+        ep_tags = parse_json_list(ep.get("tags", "[]"))
         episode_tags.append(ep_tags)
         all_tags.update(ep_tags)
 
@@ -156,9 +143,7 @@ def _format_source_dates(dates: list[str]) -> str:
     parsed: list[datetime] = []
     for d in dates:
         try:
-            dt = datetime.fromisoformat(d)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
+            dt = parse_datetime(d)
             parsed.append(dt)
         except (ValueError, TypeError):
             continue
@@ -298,7 +283,10 @@ def _apply_evolving_topic_signals(
         return
 
     try:
-        contradicted_ids = get_recently_contradicted_topic_ids(days=30)
+        cfg = get_config()
+        contradicted_ids = get_recently_contradicted_topic_ids(
+            days=cfg.EVOLVING_TOPIC_LOOKBACK_DAYS,
+        )
     except (OSError, RuntimeError) as exc:
         logger.warning("Failed to check recent contradictions: %s", exc)
         return
@@ -423,7 +411,7 @@ def recall(
         if _ct_set and ep["content_type"] not in _ct_set:
             continue
         if _tag_set:
-            ep_tags = _parse_tags(ep["tags"])
+            ep_tags = parse_json_list(ep["tags"])
             if not _tag_set.intersection(ep_tags):
                 continue
         if after and ep["created_at"] < after:
@@ -453,7 +441,7 @@ def recall(
 
     episodes = []
     for ep, score, sim, bm25 in top:
-        ep_parsed_tags = _parse_tags(ep["tags"])
+        ep_parsed_tags = parse_json_list(ep["tags"])
         entry: dict[str, object] = {
             "id": ep["id"],
             "content": ep["content"],
@@ -563,14 +551,7 @@ def _search_knowledge(
             content = filepath.read_text(encoding="utf-8")
 
         # Parse source_episodes for traceability
-        raw_src = topic.get("source_episodes", "[]")
-        if isinstance(raw_src, str):
-            try:
-                topic_src_eps: list[str] = json.loads(raw_src)
-            except (json.JSONDecodeError, ValueError):
-                topic_src_eps = []
-        else:
-            topic_src_eps = raw_src if raw_src is not None else []
+        topic_src_eps: list[str] = parse_json_list(topic.get("source_episodes"))
 
         scored_topics.append({
             "topic": topic["filename"].replace(".md", ""),
@@ -687,14 +668,7 @@ def _search_records(
             content = {}
 
         # Parse source_episodes for deduplication downstream
-        raw_src = rec.get("source_episodes", "[]")
-        if isinstance(raw_src, str):
-            try:
-                src_eps: list[str] = json.loads(raw_src)
-            except (json.JSONDecodeError, ValueError):
-                src_eps = []
-        else:
-            src_eps = raw_src if raw_src is not None else []
+        src_eps: list[str] = parse_json_list(rec.get("source_episodes"))
 
         scored_records.append({
             "id": rec["id"],

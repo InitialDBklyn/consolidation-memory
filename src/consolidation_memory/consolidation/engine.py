@@ -57,7 +57,12 @@ from consolidation_memory.consolidation.prompting import (
 )
 from consolidation_memory.consolidation.scoring import _adjust_surprise_scores
 from consolidation_memory.plugins import get_plugin_manager
-from consolidation_memory.types import ConsolidationReport
+from consolidation_memory.types import (
+    ConsolidationReport,
+    RUN_STATUS_COMPLETED,
+    RUN_STATUS_FAILED,
+)
+from consolidation_memory.utils import parse_json_list
 
 logger = logging.getLogger(__name__)
 
@@ -511,8 +516,7 @@ def _process_cluster(
 
     all_tags: list[str] = []
     for ep in cluster_episodes:
-        raw = ep["tags"]
-        all_tags.extend(json.loads(raw) if isinstance(raw, str) else raw)
+        all_tags.extend(parse_json_list(ep["tags"]))
     tag_counts = Counter(all_tags).most_common(5)
     tag_summary = ", ".join(f"{t}({c})" for t, c in tag_counts) if tag_counts else "none"
 
@@ -647,7 +651,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
         if len(episodes) < cfg.CONSOLIDATION_MIN_CLUSTER_SIZE:
             logger.info("Only %d episodes — nothing to consolidate.", len(episodes))
             complete_consolidation_run(
-                run_id, status="completed", episodes_processed=len(episodes)
+                run_id, status=RUN_STATUS_COMPLETED, episodes_processed=len(episodes)
             )
             return {"status": "nothing_to_consolidate", "episodes": len(episodes)}
 
@@ -660,7 +664,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
         if batch_result is None:
             logger.warning("No vectors found for episodes — aborting.")
             complete_consolidation_run(
-                run_id, status="failed", error_message="No vectors in FAISS"
+                run_id, status=RUN_STATUS_FAILED, error_message="No vectors in FAISS"
             )
             return {"status": "error", "message": "No vectors found"}
 
@@ -676,7 +680,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
 
         if len(valid_episodes) < 2:
             logger.info("Only 1 valid episode — skipping clustering.")
-            complete_consolidation_run(run_id, status="completed", episodes_processed=1)
+            complete_consolidation_run(run_id, status=RUN_STATUS_COMPLETED, episodes_processed=1)
             return {"status": "too_few_episodes"}
 
         condensed = squareform(dist_matrix, checks=False)
@@ -781,7 +785,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
             "clusters_failed": clusters_failed,
             "topics_created": topics_created,
             "topics_updated": topics_updated,
-            "episodes_pruned": len(prunable) if prunable else 0,
+            "episodes_pruned": len(prunable),
             "surprise_adjusted": surprise_adjusted,
             "api_calls": api_calls,
             "failed_episode_ids": all_failed_ep_ids,
@@ -798,7 +802,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
             clusters_formed=len(valid_clusters),
             topics_created=topics_created,
             topics_updated=topics_updated,
-            episodes_pruned=len(prunable) if prunable else 0,
+            episodes_pruned=len(prunable),
         )
 
         avg_conf = 0.0
@@ -829,7 +833,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
             topics_created,
             topics_updated,
             clusters_failed,
-            len(prunable) if prunable else 0,
+            len(prunable),
             surprise_adjusted,
         )
         get_plugin_manager().fire("on_consolidation_complete", report=report)
@@ -837,7 +841,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
 
     except Exception as e:
         logger.exception("Consolidation failed: %s", e)
-        complete_consolidation_run(run_id, status="failed", error_message=str(e))
+        complete_consolidation_run(run_id, status=RUN_STATUS_FAILED, error_message=str(e))
         return {"status": "error", "message": str(e)}
 
 

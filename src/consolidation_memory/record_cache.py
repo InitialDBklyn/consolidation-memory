@@ -22,6 +22,7 @@ import numpy as np
 
 from consolidation_memory.database import get_all_active_records
 from consolidation_memory.backends import encode_documents
+from consolidation_memory.utils import parse_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +54,10 @@ def _is_record_expired(record: dict) -> bool:
         return False
     if isinstance(valid_until, str):
         try:
-            valid_until = datetime.fromisoformat(valid_until)
+            valid_until = parse_datetime(valid_until)
         except (ValueError, TypeError):
             return False
-    if valid_until.tzinfo is None:
+    elif valid_until.tzinfo is None:
         valid_until = valid_until.replace(tzinfo=timezone.utc)
     return valid_until < datetime.now(timezone.utc)
 

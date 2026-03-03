@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timezone
 
 from consolidation_memory.config import get_config
+from consolidation_memory.utils import parse_datetime
 from consolidation_memory.database import (
     get_active_episodes_paginated,
     get_median_access_count,
@@ -49,9 +50,7 @@ def _adjust_surprise_scores() -> int:
                 new_score = max(new_score, target)
 
             try:
-                last_update = datetime.fromisoformat(ep["updated_at"])
-                if last_update.tzinfo is None:
-                    last_update = last_update.replace(tzinfo=timezone.utc)
+                last_update = parse_datetime(ep["updated_at"])
                 days_inactive = (now - last_update).total_seconds() / 86400.0
             except (ValueError, TypeError):
                 days_inactive = 0
