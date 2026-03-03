@@ -37,6 +37,10 @@ def tmp_data_dir(tmp_path):
     topic_cache.invalidate()
     record_cache.invalidate()
 
+    # Reset plugin manager singleton so registered plugins don't leak between tests
+    from consolidation_memory.plugins import reset_plugin_manager
+    reset_plugin_manager()
+
     yield tmp_path
 
     # Close ALL connections (including those from spawned threads)

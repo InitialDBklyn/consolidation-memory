@@ -92,6 +92,10 @@ class ContradictionsRequest(BaseModel):
     topic: str | None = None
 
 
+class ConsolidationLogRequest(BaseModel):
+    last_n: int = Field(default=5, ge=1, le=20)
+
+
 # ── App factory ──────────────────────────────────────────────────────────────
 
 _client: MemoryClient | None = None
@@ -196,7 +200,9 @@ def create_app() -> FastAPI:
     @app.post("/memory/consolidate")
     async def consolidate():
         """Run consolidation manually."""
-        return _require_client().consolidate()
+        import json
+        result = _require_client().consolidate()
+        return json.loads(json.dumps({"status": "completed", "report": result}, default=str))
 
     @app.post("/memory/correct")
     async def correct(req: CorrectRequest):
@@ -260,6 +266,12 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=result.message)
         if result.status == "error":
             raise HTTPException(status_code=400, detail=result.message)
+        return dataclasses.asdict(result)
+
+    @app.post("/memory/consolidation-log")
+    async def consolidation_log(req: ConsolidationLogRequest):
+        """Show recent consolidation activity as a human-readable changelog."""
+        result = _require_client().consolidation_log(last_n=req.last_n)
         return dataclasses.asdict(result)
 
     @app.get("/memory/decay-report")

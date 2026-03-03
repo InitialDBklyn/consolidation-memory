@@ -133,6 +133,109 @@ class TestConsolidationLogClient:
         assert "5 episodes" in result.entries[0]["summary"].lower()
 
 
+class TestConsolidationLogContradictions:
+    """Test contradiction cross-referencing in consolidation log."""
+
+    def test_contradictions_counted_within_run_window(self, tmp_data_dir):
+        """Contradictions detected during a run's time window should be counted."""
+        import time
+        import uuid
+        from consolidation_memory.database import (
+            ensure_schema,
+            start_consolidation_run,
+            insert_contradiction,
+            complete_consolidation_run,
+        )
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+
+        # Create a run with a contradiction inserted during the run
+        run_id = start_consolidation_run()
+        time.sleep(0.05)
+
+        insert_contradiction(
+            topic_id=str(uuid.uuid4()),
+            old_record_id=None,
+            new_record_id=None,
+            old_content="old fact",
+            new_content="new fact",
+            resolution="expired_old",
+        )
+
+        time.sleep(0.05)
+        complete_consolidation_run(
+            run_id,
+            episodes_processed=5,
+            topics_created=1,
+            topics_updated=0,
+        )
+
+        client = MemoryClient()
+        result = client.consolidation_log()
+
+        assert result.total == 1
+        assert result.entries[0]["contradictions_detected"] == 1
+
+    def test_contradictions_outside_window_not_counted(self, tmp_data_dir):
+        """Contradictions outside a run's time window should not be counted."""
+        import time
+        import uuid
+        from consolidation_memory.database import (
+            ensure_schema,
+            start_consolidation_run,
+            insert_contradiction,
+            complete_consolidation_run,
+        )
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+
+        # Insert contradiction BEFORE the run starts
+        insert_contradiction(
+            topic_id=str(uuid.uuid4()),
+            old_record_id=None,
+            new_record_id=None,
+            old_content="old fact",
+            new_content="new fact",
+            resolution="expired_old",
+        )
+
+        time.sleep(0.05)
+
+        run_id = start_consolidation_run()
+        time.sleep(0.05)
+        complete_consolidation_run(
+            run_id,
+            episodes_processed=5,
+            topics_created=1,
+            topics_updated=0,
+        )
+
+        client = MemoryClient()
+        result = client.consolidation_log()
+
+        assert result.total == 1
+        assert result.entries[0]["contradictions_detected"] == 0
+
+    def test_running_status_summary(self, tmp_data_dir):
+        """A run with status 'running' should say 'In progress'."""
+        from consolidation_memory.database import ensure_schema, start_consolidation_run
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+
+        # start_consolidation_run inserts a row with status='running'
+        start_consolidation_run()
+
+        client = MemoryClient()
+        result = client.consolidation_log()
+
+        assert result.total == 1
+        assert result.entries[0]["status"] == "running"
+        assert result.entries[0]["summary"] == "In progress"
+
+
 class TestConsolidationLogSchema:
     """Test the OpenAI schema and dispatch."""
 

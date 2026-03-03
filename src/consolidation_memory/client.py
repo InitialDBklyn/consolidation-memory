@@ -95,8 +95,10 @@ class MemoryClient:
             __version__,
         )
 
-        # Fire plugin startup hook
+        # Discover and load plugins, then fire startup hook
         from consolidation_memory.plugins import get_plugin_manager
+        if cfg.PLUGINS_ENABLED:
+            get_plugin_manager().load_plugins()
         get_plugin_manager().fire("on_startup", client=self)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
@@ -118,7 +120,9 @@ class MemoryClient:
         if self._consolidation_pool is not None:
             self._consolidation_pool.shutdown(wait=True, cancel_futures=True)
             self._consolidation_pool = None
-        self._llm_executor.shutdown(wait=True, cancel_futures=True)
+        if self._llm_executor is not None:
+            self._llm_executor.shutdown(wait=True, cancel_futures=True)
+            self._llm_executor = None
 
     def __enter__(self) -> MemoryClient:
         return self
@@ -296,6 +300,8 @@ class MemoryClient:
         pending_embs: list[np.ndarray] = []
         # Track accepted embeddings within this batch for intra-batch dedup
         accepted_embs: list[np.ndarray] = []
+        # Map episode_id -> item for plugin hooks
+        stored_items_by_id: dict[str, dict] = {}
 
         for i, item in enumerate(items):
             emb = embeddings[i]
@@ -345,6 +351,7 @@ class MemoryClient:
             pending_ids.append(episode_id)
             pending_embs.append(emb)
             accepted_embs.append(emb.reshape(-1).astype(np.float32))
+            stored_items_by_id[episode_id] = item
             stored += 1
             results.append({
                 "status": "stored",
@@ -366,6 +373,24 @@ class MemoryClient:
                 stored = 0
                 results = [r for r in results if r.get("status") != "stored"]
                 results.append({"status": "error", "message": str(e)})
+
+        # Fire on_store plugin hooks for each successfully stored episode
+        if pending_ids:
+            from consolidation_memory.plugins import get_plugin_manager
+            pm = get_plugin_manager()
+            for res in results:
+                if res.get("status") == "stored" and "id" in res:
+                    eid = res["id"]
+                    if eid in stored_items_by_id:
+                        item = stored_items_by_id[eid]
+                        pm.fire(
+                            "on_store",
+                            episode_id=eid,
+                            content=item["content"],
+                            content_type=item["content_type"],
+                            tags=item.get("tags") or [],
+                            surprise=item["surprise"],
+                        )
 
         logger.info("Batch store: %d stored, %d duplicates out of %d", stored, duplicates, len(items))
         return BatchStoreResult(status="stored", stored=stored, duplicates=duplicates, results=results)
@@ -1034,8 +1059,8 @@ class MemoryClient:
                 message="No consolidation runs yet.",
             )
 
-        # Get recent contradictions for cross-referencing
-        contradictions = db_get_contradictions(limit=100)
+        # Fetch enough contradictions to cover all requested runs
+        contradictions = db_get_contradictions(limit=last_n * 50)
 
         entries = []
         for run in runs:
@@ -1075,6 +1100,8 @@ class MemoryClient:
             summary = ", ".join(parts) if parts else "no changes"
             if status == "failed":
                 summary = f"FAILED — {run.get('error_message') or 'unknown error'}"
+            elif status == "running":
+                summary = "In progress"
             else:
                 summary = summary[0].upper() + summary[1:] if summary else summary
 

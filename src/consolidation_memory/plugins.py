@@ -25,6 +25,7 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+import threading
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -152,7 +153,7 @@ class PluginManager:
         from importlib.metadata import entry_points
 
         eps: Any
-        if sys.version_info >= (3, 12):
+        if sys.version_info >= (3, 10):
             eps = entry_points(group=_EP_GROUP)
         else:
             all_eps = entry_points()
@@ -235,18 +236,23 @@ def _import_plugin(dotted_path: str) -> PluginBase:
 # ── singleton ────────────────────────────────────────────────────────────────
 
 _manager: PluginManager | None = None
+_manager_lock = threading.Lock()
 
 
 def get_plugin_manager() -> PluginManager:
     """Return the PluginManager singleton, creating it on first access."""
     global _manager
-    if _manager is None:
-        _manager = PluginManager()
-    return _manager
+    if _manager is not None:
+        return _manager
+    with _manager_lock:
+        if _manager is None:
+            _manager = PluginManager()
+        return _manager
 
 
 def reset_plugin_manager() -> PluginManager:
     """Reset the singleton (for tests). Returns the fresh instance."""
     global _manager
-    _manager = PluginManager()
-    return _manager
+    with _manager_lock:
+        _manager = PluginManager()
+        return _manager

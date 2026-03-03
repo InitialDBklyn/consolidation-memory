@@ -498,17 +498,23 @@ def fts_delete(episode_id: str) -> None:
         logger.warning("FTS5 delete failed for %s: %s", episode_id, e)
 
 
+_FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
+
+
 def _sanitize_fts_query(query: str) -> str:
     """Sanitize a query for FTS5 MATCH.
 
     Splits into terms, strips non-word characters, drops single-char tokens,
-    joins with OR so documents matching any term are returned.
+    double-quotes FTS5 reserved operators so they're treated as literals,
+    and joins with OR so documents matching any term are returned.
     """
     terms = re.findall(r'\w+', query)
     terms = [t for t in terms if len(t) > 1]
     if not terms:
         return ""
-    return " OR ".join(terms)
+    # Double-quote terms that match FTS5 operators so they're treated as literals
+    safe_terms = [f'"{t}"' if t.upper() in _FTS5_OPERATORS else t for t in terms]
+    return " OR ".join(safe_terms)
 
 
 def fts_search(query: str, limit: int = 50) -> list[tuple[str, float]]:

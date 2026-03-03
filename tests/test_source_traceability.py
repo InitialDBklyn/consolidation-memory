@@ -146,3 +146,10 @@ class TestEnrichSourceTraceability:
         assert len(result[1]["source_dates"]) == 1
         assert result[0]["source_summary"].startswith("Based on 1")
         assert result[1]["source_summary"].startswith("Based on 1")
+
+    def test_missing_key_sets_empty_fields(self):
+        """Records without source_episodes should get empty enrichment fields."""
+        records = [{"id": "r1"}]
+        result = _enrich_source_traceability(records)
+        assert result[0]["source_summary"] == ""
+        assert result[0]["source_dates"] == []

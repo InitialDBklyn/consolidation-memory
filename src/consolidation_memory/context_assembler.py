@@ -306,19 +306,22 @@ def _apply_evolving_topic_signals(
     if not contradicted_ids:
         return
 
-    # We need topic IDs — look up from the knowledge_topics table via filename
-    from consolidation_memory.database import get_all_knowledge_topics
+    # Try to use _topic_id from scored topics (set by _search_knowledge).
+    # Fall back to DB lookup only if _topic_id is missing.
     topic_filename_to_id: dict[str, str] = {}
-    try:
-        all_topics = get_all_knowledge_topics()
-        topic_filename_to_id = {t["filename"]: t["id"] for t in all_topics}
-    except (OSError, RuntimeError) as exc:
-        logger.warning("Failed to look up topic IDs for evolving signals: %s", exc)
-        return
+    needs_fallback = any(not t.get("_topic_id") for t in topics)
+    if needs_fallback:
+        from consolidation_memory.database import get_all_knowledge_topics
+        try:
+            all_topics = get_all_knowledge_topics()
+            topic_filename_to_id = {t["filename"]: t["id"] for t in all_topics}
+        except (OSError, RuntimeError) as exc:
+            logger.warning("Failed to look up topic IDs for evolving signals: %s", exc)
+            return
 
     evolving_count = 0
     for topic in topics:
-        topic_id = topic_filename_to_id.get(topic.get("filename", ""))
+        topic_id = topic.get("_topic_id") or topic_filename_to_id.get(topic.get("filename", ""))
         if topic_id and topic_id in contradicted_ids:
             topic["uncertainty"] = _EVOLVING_TOPIC_WARNING
             evolving_count += 1
@@ -578,6 +581,7 @@ def _search_knowledge(
             "confidence": topic["confidence"],
             "relevance": round(relevance, 3),
             "source_episodes": topic_src_eps,
+            "_topic_id": topic.get("id"),
         })
 
     logger.debug(
@@ -593,6 +597,10 @@ def _search_knowledge(
 
     # Uncertainty signaling: flag evolving topics with recent contradictions
     _apply_evolving_topic_signals(top_topics, warnings)
+
+    # Strip internal _topic_id before returning to callers
+    for t in top_topics:
+        t.pop("_topic_id", None)
 
     return top_topics, warnings
 

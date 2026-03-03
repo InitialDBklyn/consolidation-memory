@@ -56,6 +56,7 @@ from consolidation_memory.consolidation.prompting import (
     _slugify,
 )
 from consolidation_memory.consolidation.scoring import _adjust_surprise_scores
+from consolidation_memory.plugins import get_plugin_manager
 from consolidation_memory.types import ConsolidationReport
 
 logger = logging.getLogger(__name__)
@@ -391,6 +392,12 @@ def _merge_into_existing(
                 new_content=new_content,
                 resolution="expired_old",
             )
+            get_plugin_manager().fire(
+                "on_contradiction",
+                topic_filename=existing["filename"],
+                old_content=old_content,
+                new_content=new_content,
+            )
         except Exception as e:
             logger.warning("Failed to log contradiction: %s", e)
 
@@ -451,6 +458,12 @@ def _merge_into_existing(
     record_cache.invalidate()
     logger.info(
         "Merged into existing topic: %s (%d records)", existing["filename"], len(merged_records)
+    )
+    get_plugin_manager().fire(
+        "on_topic_updated",
+        filename=existing["filename"],
+        title=merged_title,
+        record_count=len(merged_records),
     )
     return "updated", merge_calls
 
@@ -587,6 +600,12 @@ def _process_cluster(
         topic_cache.invalidate()
         record_cache.invalidate()
         logger.info("Created new topic: %s (%d records)", filename, len(records))
+        get_plugin_manager().fire(
+            "on_topic_created",
+            filename=filename,
+            title=title,
+            record_count=len(records),
+        )
         return {"status": "created", "api_calls": api_calls}
 
 
@@ -621,6 +640,10 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
     try:
         episodes = get_unconsolidated_episodes(
             limit=cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN, max_attempts=cfg.CONSOLIDATION_MAX_ATTEMPTS
+        )
+
+        get_plugin_manager().fire(
+            "on_consolidation_start", run_id=run_id, episode_count=len(episodes),
         )
 
         if len(episodes) < cfg.CONSOLIDATION_MIN_CLUSTER_SIZE:
@@ -735,6 +758,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
                 logger.info(
                     "Pruned %d old episodes (%d vectors tombstoned)", len(prunable), removed
                 )
+                get_plugin_manager().fire("on_prune", episode_ids=prune_ids)
         else:
             logger.debug("Pruning disabled (set prune_enabled = true in config to enable)")
 
@@ -810,6 +834,7 @@ def run_consolidation(vector_store: VectorStore | None = None) -> ConsolidationR
             len(prunable) if prunable else 0,
             surprise_adjusted,
         )
+        get_plugin_manager().fire("on_consolidation_complete", report=report)
         return report
 
     except Exception as e:

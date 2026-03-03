@@ -141,6 +141,28 @@ class TestQuerySanitization:
     def test_single_valid_term(self):
         assert _sanitize_fts_query("CORS") == "CORS"
 
+    def test_fts5_operators_quoted(self):
+        """FTS5 reserved words (NOT, AND, OR, NEAR) should be double-quoted."""
+        result = _sanitize_fts_query("do NOT use AND or NEAR")
+        assert '"NOT"' in result
+        assert '"AND"' in result
+        assert '"NEAR"' in result
+        # "do" is only 2 chars, kept; "or" is also 2 chars, kept
+        # "use" is a normal word, not quoted
+        assert "use" in result
+
+    def test_fts5_operator_case_insensitive(self):
+        """Operators should be detected case-insensitively."""
+        result = _sanitize_fts_query("not near")
+        assert '"not"' in result or '"NOT"' in result.upper()
+        assert '"near"' in result or '"NEAR"' in result.upper()
+
+    def test_fts5_or_as_search_term(self):
+        """The word 'OR' as a search term should be quoted, not treated as FTS5 OR."""
+        result = _sanitize_fts_query("Oregon OR logic")
+        # "OR" should be quoted so it's treated as a literal term
+        assert '"OR"' in result
+
 
 # ── BM25 Normalization ──────────────────────────────────────────────────────
 

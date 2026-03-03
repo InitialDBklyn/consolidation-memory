@@ -227,7 +227,7 @@ def _parse_fm_lines(block: str) -> dict:
             meta["tags"] = [t.strip().strip("'\"") for t in value.split(",") if t.strip()]
         elif key == "confidence":
             try:
-                meta["confidence"] = float(value)
+                meta["confidence"] = max(0.0, min(1.0, float(value)))
             except ValueError:
                 meta["confidence"] = 0.8
         else:
