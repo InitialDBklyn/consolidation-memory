@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.12.3 — 2026-03-03
+
+Comprehensive security and robustness hardening across 17 files.
+
+### Security
+
+- **Prompt injection mitigation** — all user-supplied content fed into LLM consolidation/contradiction prompts is now sanitized via `_sanitize_for_prompt()`
+- **Release script shell injection** — `subprocess.run(shell=True)` replaced with list-form invocation
+- **Path traversal guard** — `_merge_into_existing` in consolidation engine now rejects filenames with `..` or `/`
+- **REST filename validation** — topic read/correct endpoints reject unsafe filenames
+
+### Bug Fixes
+
+- **Database re-entrant connections** — `get_connection()` now uses nest counting so nested calls don't double-commit/rollback
+- **Atomic FTS operations** — `insert_episode`, `soft_delete_episode`, `hard_delete_episode` now perform FTS updates inside the same connection context
+- **Circuit breaker TOCTOU** — `check()` now acquires lock internally for atomic state transitions
+- **Config bool coercion** — `bool("false")` trap fixed with `_coerce_bool()` helper for all TOML boolean fields
+- **Context assembler datetime comparison** — ISO string comparison replaced with proper `parse_datetime()` calls
+- **Engine version file collision** — timestamp format now includes microseconds
+- **Dashboard None guards** — surprise_score, consolidation run fields, and `_topics` init all guarded
+
+### Hardening
+
+- **Config thread safety** — `get_config()` uses double-checked locking
+- **API exception isolation** — all 16 MCP tool handlers and REST endpoints wrapped in try/except with logging
+- **API validation parity** — content length (50KB), batch size (100), n_results bounds enforced across MCP/REST/OpenAI surfaces
+- **REST async correctness** — all endpoints now use `asyncio.to_thread()` for blocking client calls
+- **Client batch validation** — episodes without `"content"` key are skipped; surprise coerced to float
+- **Background consolidation safety** — loop checks stop event and pool before submitting
+- **FAISS index safety** — local VectorStore wrapped in try/finally with `_save()`
+- **Plugin dispatch safety** — `fire()` iterates a copy of the plugin list
+- **Release script rollback** — version bump reverted on test/lint failure
+- **Retry validation** — `retry_with_backoff` validates `max_retries >= 1`
+- **Backend cleanup** — `reset_backends()` closes existing backends
+
+### Internal
+
+- 526 tests (2 new for schemas.py validation)
+
 ## 0.12.2 — 2026-03-02
 
 Temporal belief queries, shared utils, and code quality improvements.
