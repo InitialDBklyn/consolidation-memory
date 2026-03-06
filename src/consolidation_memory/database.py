@@ -32,7 +32,7 @@ _fts5_lock = threading.Lock()
 
 # ── Schema versioning ────────────────────────────────────────────────────────
 
-CURRENT_SCHEMA_VERSION = 10
+CURRENT_SCHEMA_VERSION = 11
 
 # Future migrations go here: version -> list of SQL statements
 MIGRATIONS: dict[int, list[str]] = {
@@ -117,6 +117,67 @@ MIGRATIONS: dict[int, list[str]] = {
     # may not be available in all SQLite builds.  The SQL list here is empty;
     # the real work happens in _apply_fts5_migration().
     10: [],
+    11: [
+        """CREATE TABLE IF NOT EXISTS claims (
+            id              TEXT PRIMARY KEY,
+            claim_type      TEXT NOT NULL,
+            canonical_text  TEXT NOT NULL,
+            payload         TEXT NOT NULL DEFAULT '{}',
+            status          TEXT NOT NULL DEFAULT 'active',
+            confidence      REAL NOT NULL DEFAULT 0.8,
+            valid_from      TEXT NOT NULL,
+            valid_until     TEXT,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_claims_temporal ON claims(valid_from, valid_until)",
+        "CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status)",
+        """CREATE TABLE IF NOT EXISTS claim_edges (
+            id              TEXT PRIMARY KEY,
+            from_claim_id   TEXT NOT NULL,
+            to_claim_id     TEXT NOT NULL,
+            edge_type       TEXT NOT NULL,
+            confidence      REAL NOT NULL DEFAULT 1.0,
+            details         TEXT,
+            created_at      TEXT NOT NULL,
+            FOREIGN KEY (from_claim_id) REFERENCES claims(id),
+            FOREIGN KEY (to_claim_id) REFERENCES claims(id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_claim_edges_from_claim ON claim_edges(from_claim_id)",
+        "CREATE INDEX IF NOT EXISTS idx_claim_edges_to_claim ON claim_edges(to_claim_id)",
+        """CREATE TABLE IF NOT EXISTS claim_sources (
+            id                  TEXT PRIMARY KEY,
+            claim_id            TEXT NOT NULL,
+            source_episode_id   TEXT,
+            source_topic_id     TEXT,
+            source_record_id    TEXT,
+            created_at          TEXT NOT NULL,
+            FOREIGN KEY (claim_id) REFERENCES claims(id),
+            FOREIGN KEY (source_episode_id) REFERENCES episodes(id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_claim_sources_claim_id ON claim_sources(claim_id)",
+        "CREATE INDEX IF NOT EXISTS idx_claim_sources_episode ON claim_sources(source_episode_id)",
+        """CREATE TABLE IF NOT EXISTS claim_events (
+            id              TEXT PRIMARY KEY,
+            claim_id        TEXT NOT NULL,
+            event_type      TEXT NOT NULL,
+            details         TEXT,
+            created_at      TEXT NOT NULL,
+            FOREIGN KEY (claim_id) REFERENCES claims(id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_claim_events_claim_created ON claim_events(claim_id, created_at)",
+        """CREATE TABLE IF NOT EXISTS episode_anchors (
+            id              TEXT PRIMARY KEY,
+            episode_id      TEXT NOT NULL,
+            anchor_type     TEXT NOT NULL,
+            anchor_value    TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            FOREIGN KEY (episode_id) REFERENCES episodes(id),
+            UNIQUE(episode_id, anchor_type, anchor_value)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_episode_anchors_lookup ON episode_anchors(anchor_type, anchor_value)",
+        "CREATE INDEX IF NOT EXISTS idx_episode_anchors_episode ON episode_anchors(episode_id)",
+    ],
 }
 
 
@@ -1063,7 +1124,355 @@ def get_record_count(include_expired: bool = False) -> int:
     return row["cnt"] if row else 0
 
 
-# ── Consolidation Run Tracking ──────────────────────────────────────────────
+# -- Claim Graph CRUD ---------------------------------------------------------
+
+def upsert_claim(
+    claim_id: str,
+    claim_type: str,
+    canonical_text: str,
+    payload: dict[str, Any] | str | None = None,
+    status: str = "active",
+    confidence: float = 0.8,
+    valid_from: str | None = None,
+    valid_until: str | None = None,
+) -> str:
+    """Insert or update a claim row by ID."""
+    now = _now()
+    payload_text = payload if isinstance(payload, str) else json.dumps(payload or {})
+    valid_from_ts = valid_from or now
+
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO claims
+               (id, claim_type, canonical_text, payload, status, confidence,
+                valid_from, valid_until, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   claim_type = excluded.claim_type,
+                   canonical_text = excluded.canonical_text,
+                   payload = excluded.payload,
+                   status = excluded.status,
+                   confidence = excluded.confidence,
+                   valid_from = excluded.valid_from,
+                   valid_until = excluded.valid_until,
+                   updated_at = excluded.updated_at""",
+            (
+                claim_id,
+                claim_type,
+                canonical_text,
+                payload_text,
+                status,
+                confidence,
+                valid_from_ts,
+                valid_until,
+                now,
+                now,
+            ),
+        )
+    return claim_id
+
+
+def get_active_claims(
+    claim_type: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Return currently active claims, optionally filtered by type."""
+    now = _now()
+    conditions = [
+        "status = ?",
+        "valid_from <= ?",
+        "(valid_until IS NULL OR valid_until > ?)",
+    ]
+    params: list[Any] = ["active", now, now]
+
+    if claim_type:
+        conditions.append("claim_type = ?")
+        params.append(claim_type)
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT * FROM claims
+                WHERE {where}
+                ORDER BY updated_at DESC, id ASC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_claims_as_of(
+    as_of: str,
+    claim_type: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Return claims valid at a specific point in time."""
+    conditions = [
+        "valid_from <= ?",
+        "(valid_until IS NULL OR valid_until > ?)",
+    ]
+    params: list[Any] = [as_of, as_of]
+
+    if claim_type:
+        conditions.append("claim_type = ?")
+        params.append(claim_type)
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT * FROM claims
+                WHERE {where}
+                ORDER BY updated_at DESC, id ASC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def expire_claim(claim_id: str, valid_until: str | None = None) -> bool:
+    """Expire a claim by setting status=expired and valid_until."""
+    ts = valid_until or _now()
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """UPDATE claims
+               SET status = 'expired',
+                   valid_until = CASE
+                       WHEN valid_until IS NULL OR valid_until > ? THEN ?
+                       ELSE valid_until
+                   END,
+                   updated_at = ?
+               WHERE id = ?""",
+            (ts, ts, _now(), claim_id),
+        )
+    return bool(cursor.rowcount and cursor.rowcount > 0)
+
+
+def insert_claim_edge(
+    from_claim_id: str,
+    to_claim_id: str,
+    edge_type: str,
+    confidence: float = 1.0,
+    details: dict[str, Any] | str | None = None,
+    edge_id: str | None = None,
+) -> str:
+    """Insert an edge between two claims."""
+    eid = edge_id or str(uuid.uuid4())
+    details_text = details if isinstance(details, str) else (
+        json.dumps(details) if details is not None else None
+    )
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO claim_edges
+               (id, from_claim_id, to_claim_id, edge_type, confidence, details, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (eid, from_claim_id, to_claim_id, edge_type, confidence, details_text, _now()),
+        )
+    return eid
+
+
+def insert_claim_sources(claim_id: str, sources: list[dict[str, Any]]) -> list[str]:
+    """Insert source links for a claim. Returns inserted source IDs."""
+    if not sources:
+        return []
+
+    now = _now()
+    source_ids: list[str] = []
+    with get_connection() as conn:
+        for source in sources:
+            source_id = str(source.get("id") or uuid.uuid4())
+            source_episode_id = source.get("source_episode_id") or source.get("episode_id")
+            source_topic_id = source.get("source_topic_id") or source.get("topic_id")
+            source_record_id = source.get("source_record_id") or source.get("record_id")
+
+            conn.execute(
+                """INSERT INTO claim_sources
+                   (id, claim_id, source_episode_id, source_topic_id, source_record_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    source_id,
+                    claim_id,
+                    source_episode_id,
+                    source_topic_id,
+                    source_record_id,
+                    now,
+                ),
+            )
+            source_ids.append(source_id)
+    return source_ids
+
+
+def insert_claim_event(
+    claim_id: str,
+    event_type: str,
+    details: dict[str, Any] | str | None = None,
+    event_id: str | None = None,
+    created_at: str | None = None,
+) -> str:
+    """Insert a claim lifecycle event."""
+    eid = event_id or str(uuid.uuid4())
+    details_text = details if isinstance(details, str) else (
+        json.dumps(details) if details is not None else None
+    )
+    ts = created_at or _now()
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO claim_events
+               (id, claim_id, event_type, details, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (eid, claim_id, event_type, details_text, ts),
+        )
+    return eid
+
+
+def insert_episode_anchors(episode_id: str, anchors: list[dict[str, Any]]) -> list[str]:
+    """Insert anchors for an episode. Duplicate anchors are ignored."""
+    if not anchors:
+        return []
+
+    normalized: list[tuple[str, str, str]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for anchor in anchors:
+        anchor_type = str(anchor.get("anchor_type") or anchor.get("type") or "").strip()
+        anchor_value = str(anchor.get("anchor_value") or anchor.get("value") or "").strip()
+        if not anchor_type or not anchor_value:
+            continue
+
+        pair = (anchor_type, anchor_value)
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+
+        anchor_id = str(
+            anchor.get("id")
+            or uuid.uuid5(uuid.NAMESPACE_URL, f"{episode_id}:{anchor_type}:{anchor_value}")
+        )
+        normalized.append((anchor_id, anchor_type, anchor_value))
+
+    if not normalized:
+        return []
+
+    inserted_ids: list[str] = []
+    with get_connection() as conn:
+        for anchor_id, anchor_type, anchor_value in normalized:
+            cursor = conn.execute(
+                """INSERT INTO episode_anchors
+                   (id, episode_id, anchor_type, anchor_value, created_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(episode_id, anchor_type, anchor_value) DO NOTHING""",
+                (anchor_id, episode_id, anchor_type, anchor_value, _now()),
+            )
+            if cursor.rowcount and cursor.rowcount > 0:
+                inserted_ids.append(anchor_id)
+    return inserted_ids
+
+
+def get_claims_by_anchor(
+    anchor_type: str | None = None,
+    anchor_value: str | None = None,
+    include_expired: bool = False,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Fetch claims linked to episodes matching the provided anchor filter."""
+    if not anchor_type and not anchor_value:
+        return []
+
+    conditions: list[str] = []
+    params: list[Any] = []
+    if anchor_type:
+        conditions.append("ea.anchor_type = ?")
+        params.append(anchor_type)
+    if anchor_value:
+        conditions.append("ea.anchor_value = ?")
+        params.append(anchor_value)
+    if not include_expired:
+        now = _now()
+        conditions.append("c.valid_from <= ?")
+        conditions.append("(c.valid_until IS NULL OR c.valid_until > ?)")
+        params.extend([now, now])
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT DISTINCT
+                    c.id, c.claim_type, c.canonical_text, c.payload, c.status,
+                    c.confidence, c.valid_from, c.valid_until, c.created_at, c.updated_at
+                FROM claims c
+                JOIN claim_sources cs ON cs.claim_id = c.id
+                JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
+                WHERE {where}
+                ORDER BY c.updated_at DESC, c.id ASC
+                LIMIT ?""",
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_claims_challenged_by_anchors(
+    anchors: list[dict[str, Any]],
+    challenged_at: str | None = None,
+) -> list[str]:
+    """Mark active claims as challenged when linked episode anchors match."""
+    if not anchors:
+        return []
+
+    anchor_pairs: list[tuple[str, str]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for anchor in anchors:
+        anchor_type = str(anchor.get("anchor_type") or anchor.get("type") or "").strip()
+        anchor_value = str(anchor.get("anchor_value") or anchor.get("value") or "").strip()
+        if not anchor_type or not anchor_value:
+            continue
+        pair = (anchor_type, anchor_value)
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        anchor_pairs.append(pair)
+
+    if not anchor_pairs:
+        return []
+
+    challenged_ts = challenged_at or _now()
+    anchor_clauses = []
+    anchor_params: list[Any] = []
+    for anchor_type, anchor_value in anchor_pairs:
+        anchor_clauses.append("(ea.anchor_type = ? AND ea.anchor_value = ?)")
+        anchor_params.extend([anchor_type, anchor_value])
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT DISTINCT c.id
+                FROM claims c
+                JOIN claim_sources cs ON cs.claim_id = c.id
+                JOIN episode_anchors ea ON ea.episode_id = cs.source_episode_id
+                WHERE c.status = 'active'
+                  AND (c.valid_until IS NULL OR c.valid_until > ?)
+                  AND ({' OR '.join(anchor_clauses)})
+                ORDER BY c.id ASC""",
+            [challenged_ts, *anchor_params],
+        ).fetchall()
+
+        claim_ids = [row["id"] for row in rows]
+        if not claim_ids:
+            return []
+
+        placeholders = ",".join("?" for _ in claim_ids)
+        conn.execute(
+            f"""UPDATE claims
+                SET status = 'challenged', updated_at = ?
+                WHERE id IN ({placeholders})""",
+            [challenged_ts, *claim_ids],
+        )
+
+    return claim_ids
+
+
+# -- Consolidation Run Tracking -----------------------------------------------
 
 def start_consolidation_run() -> str:
     run_id = str(uuid.uuid4())

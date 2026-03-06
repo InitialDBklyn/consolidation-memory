@@ -105,3 +105,12 @@ class OllamaLLMBackend:
             _do, transient_exceptions=_TRANSIENT, context="Ollama LLM",
         )
         return result
+
+    def generate_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        json_schema: dict,
+    ) -> str:
+        # Ollama's chat endpoint may not enforce JSON schema; rely on prompt + validation.
+        return self.generate(system_prompt, user_prompt)

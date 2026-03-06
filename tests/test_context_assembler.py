@@ -174,3 +174,37 @@ class TestTaskIndicators:
     def test_non_task_words(self):
         for word in ["hello", "remember", "python"]:
             assert word not in _TASK_INDICATORS
+
+
+class TestKnowledgePathTraversal:
+    def test_search_knowledge_skips_outside_files(self, tmp_data_dir):
+        import numpy as np
+
+        from consolidation_memory.config import get_config
+        from consolidation_memory.context_assembler import _search_knowledge
+
+        cfg = get_config()
+        outside = cfg.KNOWLEDGE_DIR.parent / "outside_secret.txt"
+        outside.write_text("do-not-leak", encoding="utf-8")
+
+        query_vec = np.ones(384, dtype=np.float32)
+        query_vec = query_vec / np.linalg.norm(query_vec)
+        topic = {
+            "id": "topic-1",
+            "title": "Secret Topic",
+            "filename": "../outside_secret.txt",
+            "summary": "secret test data",
+            "confidence": 1.0,
+            "source_episodes": "[]",
+        }
+
+        with (
+            patch("consolidation_memory.context_assembler.topic_cache") as mock_tc,
+            patch("consolidation_memory.context_assembler.increment_topic_access"),
+            patch("consolidation_memory.context_assembler._apply_evolving_topic_signals"),
+        ):
+            mock_tc.get_topic_vecs.return_value = ([topic], np.stack([query_vec]))
+            topics, _ = _search_knowledge("secret test", query_vec)
+
+        assert len(topics) == 1
+        assert topics[0]["content"] == ""

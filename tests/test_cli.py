@@ -1,5 +1,7 @@
 """Tests for CLI commands, particularly `consolidation-memory test`."""
 
+import json
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -150,3 +152,54 @@ class TestMainDispatch:
         ):
             main()
             mock_cmd.assert_called_once()
+
+
+class TestExportImportHardening:
+    def test_export_skips_knowledge_path_traversal(self, tmp_data_dir):
+        from consolidation_memory.cli import cmd_export
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import ensure_schema, upsert_knowledge_topic
+
+        cfg = get_config()
+        ensure_schema()
+        outside = cfg.KNOWLEDGE_DIR.parent / "outside_secret.txt"
+        outside.write_text("top-secret", encoding="utf-8")
+        upsert_knowledge_topic("../outside_secret.txt", "Secret", "Secret summary", source_episodes=[])
+
+        cmd_export()
+
+        exports = list(cfg.BACKUP_DIR.glob("memory_export_*.json"))
+        assert len(exports) == 1
+        data = json.loads(exports[0].read_text(encoding="utf-8"))
+        exported = next(t for t in data["knowledge_topics"] if t["filename"] == "../outside_secret.txt")
+        assert exported["file_content"] == ""
+
+    def test_import_missing_source_episodes_uses_default(self, tmp_data_dir):
+        from consolidation_memory.cli import cmd_import
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import get_all_knowledge_topics
+
+        cfg = get_config()
+        payload = {
+            "exported_at": "2026-03-05T00:00:00+00:00",
+            "version": "1.1",
+            "episodes": [],
+            "knowledge_topics": [
+                {
+                    "filename": "topic.md",
+                    "title": "Topic",
+                    "summary": "Summary",
+                    "file_content": "---\ntitle: Topic\nsummary: Summary\n---\n",
+                }
+            ],
+            "stats": {"episode_count": 0, "knowledge_count": 1, "record_count": 0},
+        }
+        import_path = cfg.BACKUP_DIR / "import_missing_source_episodes.json"
+        import_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        cmd_import(str(import_path))
+
+        topics = get_all_knowledge_topics()
+        assert len(topics) == 1
+        assert topics[0]["filename"] == "topic.md"
+        assert json.loads(topics[0]["source_episodes"]) == []

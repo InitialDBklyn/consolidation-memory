@@ -64,6 +64,99 @@ def _normalize_content_type(ct: str) -> str:
     return ContentType.EXCHANGE.value
 
 
+_MD_KV_BULLET_RE = re.compile(r"^[-*]\s+(?:\*\*(.+?)\*\*|([^:]+)):\s*(.+)$")
+_MD_CONTEXT_RE = re.compile(r"^\*Context:\s*(.+?)\*\s*$")
+_MD_VALUE_CONTEXT_RE = re.compile(r"^(.*?)\s+\(([^()]+)\)\s*$")
+
+
+def _parse_markdown_kv_bullet(line: str) -> tuple[str, str] | None:
+    """Parse markdown bullet lines like '- **Key**: Value'."""
+    match = _MD_KV_BULLET_RE.match(line)
+    if not match:
+        return None
+    key = (match.group(1) or match.group(2) or "").strip()
+    value = match.group(3).strip()
+    if not key or not value:
+        return None
+    return key, value
+
+
+def _extract_records_from_markdown(body: str) -> list[dict[str, str]]:
+    """Extract structured records from rendered markdown sections."""
+    records: list[dict[str, str]] = []
+    lines = body.splitlines()
+    section: str | None = None
+    i = 0
+
+    while i < len(lines):
+        stripped = lines[i].strip()
+        lowered = stripped.lower()
+
+        if lowered == "## facts":
+            section = "facts"
+            i += 1
+            continue
+        if lowered == "## solutions":
+            section = "solutions"
+            i += 1
+            continue
+        if lowered == "## preferences":
+            section = "preferences"
+            i += 1
+            continue
+        if lowered == "## procedures":
+            section = "procedures"
+            i += 1
+            continue
+
+        if section == "facts":
+            parsed = _parse_markdown_kv_bullet(stripped)
+            if parsed:
+                subject, info = parsed
+                records.append({"type": "fact", "subject": subject, "info": info})
+        elif section == "preferences":
+            parsed = _parse_markdown_kv_bullet(stripped)
+            if parsed:
+                key, value_text = parsed
+                rec: dict[str, str] = {"type": "preference", "key": key, "value": value_text}
+                ctx_match = _MD_VALUE_CONTEXT_RE.match(value_text)
+                if ctx_match:
+                    rec["value"] = ctx_match.group(1).strip()
+                    rec["context"] = ctx_match.group(2).strip()
+                records.append(rec)
+        elif section in {"solutions", "procedures"} and stripped.startswith("### "):
+            header = stripped[4:].strip()
+            j = i + 1
+            body_lines: list[str] = []
+            context = ""
+            while j < len(lines):
+                nxt = lines[j].strip()
+                if nxt.startswith("## ") or nxt.startswith("### "):
+                    break
+                context_match = _MD_CONTEXT_RE.match(nxt)
+                if context_match:
+                    context = context_match.group(1).strip()
+                elif nxt:
+                    body_lines.append(nxt)
+                j += 1
+
+            text_body = "\n".join(body_lines).strip()
+            if header and text_body:
+                if section == "solutions":
+                    rec = {"type": "solution", "problem": header, "fix": text_body}
+                else:
+                    rec = {"type": "procedure", "trigger": header, "steps": text_body}
+                if context:
+                    rec["context"] = context
+                records.append(rec)
+            i = j
+            continue
+
+        i += 1
+
+    return records
+
+
 class MemoryClient:
     """Persistent semantic memory client.
 
@@ -222,6 +315,8 @@ class MemoryClient:
             logger.error("FAISS add failed for %s, rolled back DB insert: %s", episode_id, e)
             raise
 
+        self._persist_episode_anchors(episode_id=episode_id, content=content)
+
         # Tag co-occurrence is non-critical — log and continue on failure
         if tags and len(tags) >= 2:
             from consolidation_memory.database import update_tag_cooccurrence
@@ -379,10 +474,12 @@ class MemoryClient:
             })
 
         # Single FAISS batch add instead of per-item add()
+        batch_add_succeeded = False
         if pending_ids:
             try:
                 emb_matrix = np.stack(pending_embs)
                 self._vector_store.add_batch(pending_ids, emb_matrix)
+                batch_add_succeeded = True
             except Exception as e:
                 # Rollback all DB inserts from this batch
                 for eid in pending_ids:
@@ -392,6 +489,16 @@ class MemoryClient:
                 stored = 0
                 results = [r for r in results if r.get("status") != "stored"]
                 results.append({"status": "error", "message": str(e)})
+
+        if batch_add_succeeded:
+            for eid in pending_ids:
+                item = stored_items_by_id.get(eid)
+                if item is None:
+                    continue
+                self._persist_episode_anchors(
+                    episode_id=eid,
+                    content=str(item.get("content", "")),
+                )
 
         # Fire on_store plugin hooks for each successfully stored episode
         if pending_ids:
@@ -472,15 +579,17 @@ class MemoryClient:
         stats = get_stats()
 
         records = result.get("records", [])
+        claims = result.get("claims", [])
         logger.info(
-            "Recall query='%s' returned %d episodes, %d knowledge entries, %d records",
-            query[:80], len(result["episodes"]), len(result["knowledge"]), len(records),
+            "Recall query='%s' returned %d episodes, %d knowledge entries, %d records, %d claims",
+            query[:80], len(result["episodes"]), len(result["knowledge"]), len(records), len(claims),
         )
 
         recall_result = RecallResult(
             episodes=result["episodes"],
             knowledge=result["knowledge"],
             records=records,
+            claims=claims,
             total_episodes=stats["episodic_buffer"]["total"],
             total_knowledge_topics=stats["knowledge_base"]["total_topics"],
             warnings=result.get("warnings", []),
@@ -722,10 +831,19 @@ class MemoryClient:
             CorrectResult with status and updated metadata.
         """
         from consolidation_memory.config import get_config
-        from consolidation_memory.database import get_all_knowledge_topics, upsert_knowledge_topic
+        from consolidation_memory.database import (
+            expire_record,
+            get_all_knowledge_topics,
+            get_records_by_topic,
+            insert_knowledge_records,
+            upsert_knowledge_topic,
+        )
         from consolidation_memory.consolidation.engine import _version_knowledge_file
         from consolidation_memory.consolidation.prompting import (
-            _parse_frontmatter, _normalize_output, _sanitize_for_prompt,
+            _embedding_text_for_record,
+            _normalize_output,
+            _parse_frontmatter,
+            _sanitize_for_prompt,
         )
         from consolidation_memory.backends import get_llm_backend
 
@@ -792,26 +910,69 @@ class MemoryClient:
 
         parsed = _parse_frontmatter(corrected)
         meta = parsed["meta"]
+        body = parsed.get("body", "")
 
-        # Update DB entry
         topics = get_all_knowledge_topics()
-        for topic in topics:
-            if topic["filename"] == topic_filename:
-                upsert_knowledge_topic(
-                    filename=topic_filename,
-                    title=meta.get("title", topic["title"]),
-                    summary=meta.get("summary", topic["summary"]),
-                    source_episodes=[],
-                    fact_count=len(re.findall(r"^[\s]*[-*\d+.]\s+", corrected, re.MULTILINE)),
-                    confidence=float(meta.get("confidence", topic["confidence"])),
-                )
-                break
+        existing_topic = next((t for t in topics if t["filename"] == topic_filename), None)
+        source_eps = parse_json_list(existing_topic.get("source_episodes") if existing_topic else None)
+        existing_confidence = float(existing_topic["confidence"]) if existing_topic else 0.8
+
+        try:
+            confidence = float(meta.get("confidence", existing_confidence))
+        except (TypeError, ValueError):
+            confidence = existing_confidence
+        confidence = max(0.0, min(1.0, confidence))
+
+        parsed_records = _extract_records_from_markdown(body)
+        if not parsed_records:
+            fallback_info = (
+                str(meta.get("summary", "")).strip()
+                or body.strip()
+                or correction.strip()
+                or "Knowledge document corrected."
+            )
+            fallback_subject = str(meta.get("title", topic_filename)).strip() or topic_filename
+            parsed_records = [{
+                "type": "fact",
+                "subject": fallback_subject,
+                "info": fallback_info,
+            }]
+
+        record_rows = []
+        now_ts = datetime.now(timezone.utc).isoformat()
+        for rec in parsed_records:
+            record_rows.append({
+                "record_type": rec.get("type", "fact"),
+                "content": rec,
+                "embedding_text": _embedding_text_for_record(rec),
+                "confidence": confidence,
+                "valid_from": now_ts,
+            })
+
+        topic_id = upsert_knowledge_topic(
+            filename=topic_filename,
+            title=str(meta.get("title", existing_topic["title"] if existing_topic else topic_filename)),
+            summary=str(meta.get("summary", existing_topic["summary"] if existing_topic else "")),
+            source_episodes=source_eps,
+            fact_count=len(record_rows),
+            confidence=confidence,
+        )
+
+        for old in get_records_by_topic(topic_id, include_expired=False):
+            expire_record(old["id"], valid_until=now_ts)
+
+        if record_rows:
+            insert_knowledge_records(topic_id, record_rows, source_episodes=source_eps)
 
         from consolidation_memory import topic_cache as _tc, record_cache as _rc
         _tc.invalidate()
         _rc.invalidate()
 
-        logger.info("Corrected knowledge topic: %s", topic_filename)
+        logger.info(
+            "Corrected knowledge topic: %s (%d records)",
+            topic_filename,
+            len(record_rows),
+        )
 
         return CorrectResult(
             status="corrected",
@@ -1275,6 +1436,25 @@ class MemoryClient:
         )
 
     # ── Internal ──────────────────────────────────────────────────────────
+
+    def _persist_episode_anchors(self, episode_id: str, content: str) -> None:
+        """Best-effort anchor extraction and persistence for stored episodes."""
+        from consolidation_memory.anchors import extract_anchors
+        from consolidation_memory.database import insert_episode_anchors
+
+        try:
+            anchors = extract_anchors(content)
+        except Exception as e:
+            logger.warning("Anchor extraction failed for episode %s: %s", episode_id, e)
+            return
+
+        if not anchors:
+            return
+
+        try:
+            insert_episode_anchors(episode_id, anchors)
+        except Exception as e:
+            logger.warning("Failed to persist anchors for episode %s: %s", episode_id, e)
 
     def _compute_health(
         self,

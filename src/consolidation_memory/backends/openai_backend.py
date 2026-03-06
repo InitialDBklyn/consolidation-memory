@@ -112,3 +112,58 @@ class OpenAILLMBackend:
             _do, transient_exceptions=transient, context="OpenAI LLM",
         )
         return result
+
+    def generate_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        json_schema: dict,
+    ) -> str:
+        transient = self._get_transient_exceptions()
+
+        def _do():
+            try:
+                response = self._client.chat.completions.create(
+                    model=self._model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    max_tokens=self._max_tokens,
+                    temperature=self._temperature,
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "consolidation_extraction",
+                            "strict": True,
+                            "schema": json_schema,
+                        },
+                    },
+                )
+            except Exception as e:
+                # Some OpenAI-compatible endpoints don't support json_schema format.
+                if "response_format" in str(e).lower() or "json_schema" in str(e).lower():
+                    logger.warning(
+                        "Structured output unsupported by OpenAI-compatible endpoint; "
+                        "retrying without response_format"
+                    )
+                    response = self._client.chat.completions.create(
+                        model=self._model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        max_tokens=self._max_tokens,
+                        temperature=self._temperature,
+                    )
+                else:
+                    raise
+            content = response.choices[0].message.content
+            if content is None:
+                raise ValueError("LLM returned empty response (message.content is None)")
+            return content
+
+        result: str = retry_with_backoff(
+            _do, transient_exceptions=transient, context="OpenAI LLM JSON",
+        )
+        return result

@@ -7,7 +7,7 @@ Topic embeddings are cached via topic_cache (shared with consolidation).
 import json
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
@@ -16,6 +16,9 @@ from consolidation_memory.utils import parse_datetime, parse_json_list
 from consolidation_memory.database import (
     fts_available,
     fts_search,
+    get_active_claims,
+    get_claims_as_of,
+    get_connection,
     get_episodes_batch,
     get_recently_contradicted_topic_ids,
     get_records_as_of,
@@ -38,6 +41,9 @@ _TASK_INDICATORS: frozenset[str] = frozenset({
 _LOW_CONFIDENCE_THRESHOLD = 0.6
 _LOW_CONFIDENCE_WARNING = "Low confidence — based on limited or conflicting information"
 _EVOLVING_TOPIC_WARNING = "Evolving — this topic has had recent contradictions"
+_RECENTLY_CONTRADICTED_CLAIM_WARNING = (
+    "Recently contradicted - verify against newer evidence"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +327,156 @@ def _apply_evolving_topic_signals(
         )
 
 
+def _recently_contradicted_claim_ids(
+    claim_ids: list[str],
+    *,
+    as_of: str | None = None,
+) -> set[str]:
+    """Return claim IDs with recent contradiction events."""
+    if not claim_ids:
+        return set()
+
+    cfg = get_config()
+    reference_dt = parse_datetime(as_of) if as_of else datetime.now(timezone.utc)
+    cutoff_dt = reference_dt - timedelta(days=cfg.EVOLVING_TOPIC_LOOKBACK_DAYS)
+
+    placeholders = ",".join("?" for _ in claim_ids)
+    params = [cutoff_dt.isoformat(), reference_dt.isoformat(), *claim_ids]
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""SELECT DISTINCT claim_id
+                FROM claim_events
+                WHERE event_type = 'contradiction'
+                  AND created_at >= ?
+                  AND created_at <= ?
+                  AND claim_id IN ({placeholders})""",
+            params,
+        ).fetchall()
+    return {row["claim_id"] for row in rows}
+
+
+def _parse_claim_payload(payload_raw: object) -> dict[str, object]:
+    """Parse a claim payload from DB storage into a dict."""
+    if isinstance(payload_raw, dict):
+        return dict(payload_raw)
+    if isinstance(payload_raw, str):
+        try:
+            parsed = json.loads(payload_raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return {}
+    return {}
+
+
+def _search_claims(
+    query: str,
+    query_vec: np.ndarray | None = None,
+    *,
+    as_of: str | None = None,
+) -> tuple[list[dict], list[str]]:
+    """Search claims by semantic and keyword relevance with uncertainty labels."""
+    cfg = get_config()
+    warnings: list[str] = []
+
+    fetch_limit = max(cfg.RECORDS_MAX_RESULTS * 10, cfg.RECALL_MAX_N * 5)
+    if as_of:
+        claims = get_claims_as_of(as_of, limit=fetch_limit)
+    else:
+        claims = get_active_claims(limit=fetch_limit)
+
+    if not claims:
+        return [], warnings
+
+    claim_payloads: list[dict[str, object]] = []
+    claim_texts: list[str] = []
+    for claim in claims:
+        payload = _parse_claim_payload(claim.get("payload"))
+        claim_payloads.append(payload)
+        payload_text = " ".join(f"{k} {v}" for k, v in sorted(payload.items()))
+        claim_texts.append(f"{claim.get('canonical_text', '')} {payload_text}".strip())
+
+    try:
+        if query_vec is None:
+            query_vec = backends.encode_query(query)
+        claim_vecs = backends.encode_documents(claim_texts)
+        sims = (query_vec @ claim_vecs.T).flatten()
+    except (ConnectionError, RuntimeError, ValueError) as e:
+        logger.warning(
+            "Semantic claim search failed, falling back to keyword: %s", e,
+            exc_info=True,
+        )
+        sims = None
+        warnings.append("Claim search fell back to keyword-only (embedding failed)")
+
+    query_words = set(query.lower().split())
+    scored_claims: list[dict] = []
+    for i, claim in enumerate(claims):
+        sem_score = float(sims[i]) if sims is not None else 0.0
+
+        text_lower = claim_texts[i].lower()
+        kw_hits = sum(1 for w in query_words if w in text_lower)
+        kw_score = kw_hits / len(query_words) if query_words else 0.0
+
+        relevance = sem_score * cfg.RECORDS_SEMANTIC_WEIGHT + kw_score * cfg.RECORDS_KEYWORD_WEIGHT
+
+        confidence = float(claim.get("confidence", 0.8) or 0.8)
+        relevance *= 0.5 + 0.5 * confidence
+        if relevance < cfg.RECORDS_RELEVANCE_THRESHOLD:
+            continue
+
+        scored_claims.append({
+            "id": claim["id"],
+            "claim_type": claim.get("claim_type", ""),
+            "canonical_text": claim.get("canonical_text", ""),
+            "payload": claim_payloads[i],
+            "status": claim.get("status", "active"),
+            "confidence": confidence,
+            "valid_from": claim.get("valid_from"),
+            "valid_until": claim.get("valid_until"),
+            "relevance": round(relevance, 3),
+        })
+
+    logger.debug(
+        "claim_search: %d claims checked, %d passed relevance threshold (>=%s)",
+        len(claims), len(scored_claims), cfg.RECORDS_RELEVANCE_THRESHOLD,
+    )
+
+    scored_claims.sort(key=lambda x: x["relevance"], reverse=True)
+    top_claims = scored_claims[:cfg.RECORDS_MAX_RESULTS]
+
+    contradicted_ids = _recently_contradicted_claim_ids(
+        [claim["id"] for claim in top_claims],
+        as_of=as_of,
+    )
+    low_conf_count = 0
+    contradicted_count = 0
+    for claim in top_claims:
+        signals: list[str] = []
+        if claim["confidence"] < _LOW_CONFIDENCE_THRESHOLD:
+            signals.append(_LOW_CONFIDENCE_WARNING)
+            low_conf_count += 1
+        if claim["id"] in contradicted_ids:
+            signals.append(_RECENTLY_CONTRADICTED_CLAIM_WARNING)
+            contradicted_count += 1
+        if signals:
+            claim["uncertainty"] = " | ".join(signals)
+
+    if low_conf_count:
+        warnings.append(
+            f"{low_conf_count} claim{'s' if low_conf_count != 1 else ''} "
+            f"ha{'ve' if low_conf_count != 1 else 's'} low confidence (< {_LOW_CONFIDENCE_THRESHOLD})"
+        )
+    if contradicted_count:
+        warnings.append(
+            f"{contradicted_count} claim{'s' if contradicted_count != 1 else ''} "
+            f"{'were' if contradicted_count != 1 else 'was'} recently contradicted "
+            f"(last {cfg.EVOLVING_TOPIC_LOOKBACK_DAYS} days)"
+        )
+
+    return top_claims, warnings
+
+
 # ── Main retrieval ────────────────────────────────────────────────────────────
 
 def recall(
@@ -336,7 +492,7 @@ def recall(
     include_expired: bool = False,
     as_of: str | None = None,
 ) -> dict:
-    """Main retrieval function. Returns ranked episodes + knowledge excerpts.
+    """Main retrieval function. Returns ranked episodes + knowledge + claims.
 
     Optional filters (all applied post-vector-search):
         content_types: Only return episodes matching these types.
@@ -472,6 +628,7 @@ def recall(
 
     knowledge: list[dict] = []
     records: list[dict] = []
+    claims: list[dict] = []
     warnings = []
     if include_knowledge:
         knowledge, kw_warnings = _search_knowledge(query, query_vec, as_of=as_of)
@@ -480,6 +637,8 @@ def recall(
             query, query_vec, include_expired=include_expired, as_of=as_of,
         )
         warnings.extend(rec_warnings)
+        claims, claim_warnings = _search_claims(query, query_vec, as_of=as_of)
+        warnings.extend(claim_warnings)
 
         # Source traceability: enrich records and topics with source dates
         if records:
@@ -495,6 +654,7 @@ def recall(
         "episodes": episodes,
         "knowledge": knowledge,
         "records": records,
+        "claims": claims,
         "warnings": warnings,
     }
 
@@ -546,6 +706,7 @@ def _search_knowledge(
     query_words = set(query_lower.split())
 
     scored_topics = []
+    knowledge_resolved = cfg.KNOWLEDGE_DIR.resolve()
     for i, topic in enumerate(topics):
         sem_score = float(sims[i]) if sims is not None else 0.0
 
@@ -567,9 +728,9 @@ def _search_knowledge(
         if relevance < cfg.KNOWLEDGE_RELEVANCE_THRESHOLD:
             continue
 
-        filepath = cfg.KNOWLEDGE_DIR / topic["filename"]
+        filepath = (cfg.KNOWLEDGE_DIR / topic["filename"]).resolve()
         content = ""
-        if filepath.exists():
+        if filepath.is_relative_to(knowledge_resolved) and filepath.exists():
             content = filepath.read_text(encoding="utf-8")
 
         # Parse source_episodes for traceability

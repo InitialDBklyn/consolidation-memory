@@ -17,16 +17,21 @@ from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 
 from consolidation_memory import record_cache, topic_cache
+from consolidation_memory.claim_graph import claim_from_record
 from consolidation_memory.config import get_config
 from consolidation_memory.database import (
     complete_consolidation_run,
     ensure_schema,
+    expire_claim,
     expire_record,
     get_all_knowledge_topics,
     get_prunable_episodes,
     get_records_by_topic,
     get_unconsolidated_episodes,
     increment_consolidation_attempts,
+    insert_claim_edge,
+    insert_claim_event,
+    insert_claim_sources,
     insert_consolidation_metrics,
     insert_contradiction,
     insert_knowledge_records,
@@ -35,6 +40,7 @@ from consolidation_memory.database import (
     reset_stale_consolidation_attempts,
     soft_delete_records_by_ids,
     start_consolidation_run,
+    upsert_claim,
     upsert_knowledge_topic,
 )
 from consolidation_memory.vector_store import VectorStore
@@ -263,6 +269,218 @@ def _detect_silent_drops(
 # ── Topic merging ─────────────────────────────────────────────────────────────
 
 
+def _normalize_record_field(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _record_dedup_key(record: dict) -> tuple:
+    """Build a deterministic dedup key for a structured knowledge record."""
+    rtype = _normalize_record_field(record.get("type", "fact"))
+    if rtype == "fact":
+        return (
+            "fact",
+            _normalize_record_field(record.get("subject")),
+            _normalize_record_field(record.get("info")),
+        )
+    if rtype == "solution":
+        return (
+            "solution",
+            _normalize_record_field(record.get("problem")),
+            _normalize_record_field(record.get("fix")),
+            _normalize_record_field(record.get("context")),
+        )
+    if rtype == "preference":
+        return (
+            "preference",
+            _normalize_record_field(record.get("key")),
+            _normalize_record_field(record.get("value")),
+            _normalize_record_field(record.get("context")),
+        )
+    if rtype == "procedure":
+        return (
+            "procedure",
+            _normalize_record_field(record.get("trigger")),
+            _normalize_record_field(record.get("steps")),
+            _normalize_record_field(record.get("context")),
+        )
+    # Unknown record shape: keep stable by sorted JSON key.
+    return ("unknown", json.dumps(record, sort_keys=True, default=str))
+
+
+def _record_specificity_score(record: dict) -> int:
+    # Prefer records with denser content when deduplicating.
+    return len(_embedding_text_for_record(record)) + len(json.dumps(record, default=str))
+
+
+def _dedupe_records(records: list[dict]) -> list[dict]:
+    """Deduplicate records by type-specific keys, keeping the most specific."""
+    best_by_key: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        key = _record_dedup_key(rec)
+        if key not in best_by_key:
+            best_by_key[key] = rec
+            order.append(key)
+            continue
+        if _record_specificity_score(rec) >= _record_specificity_score(best_by_key[key]):
+            best_by_key[key] = rec
+    return [best_by_key[k] for k in order]
+
+
+def _merge_tags(existing_tags: list[str], new_tags: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for raw in [*existing_tags, *new_tags]:
+        tag = str(raw).strip()
+        if not tag:
+            continue
+        norm = tag.lower()
+        if norm in seen:
+            continue
+        seen.add(norm)
+        merged.append(tag)
+    return merged
+
+
+def _build_deterministic_merge_payload(
+    existing_records: list[dict],
+    new_records: list[dict],
+    existing_title: str,
+    existing_summary: str,
+    existing_tags: list[str],
+    extraction_data: dict,
+) -> tuple[str, str, list[str], list[dict]]:
+    """Fallback merge that never calls the LLM."""
+    merged_records = _dedupe_records([*existing_records, *new_records])
+    merged_title = extraction_data.get("title") or existing_title
+    merged_summary = extraction_data.get("summary") or existing_summary
+    merged_tags = _merge_tags(existing_tags, extraction_data.get("tags", []))
+    return merged_title, merged_summary, merged_tags, merged_records
+
+
+def _coerce_content_dict(content: object) -> dict:
+    """Best-effort conversion of a stored record payload to a dict."""
+    if isinstance(content, dict):
+        return dict(content)
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return {}
+    return {}
+
+
+def _materialize_claim_for_record(
+    record: dict,
+    *,
+    topic_id: str,
+    source_episode_ids: list[str] | None = None,
+    source_record_id: str | None = None,
+    confidence: float = 0.8,
+    status: str = "active",
+    valid_from: str | None = None,
+    valid_until: str | None = None,
+    event_type: str | None = None,
+    event_details: dict | None = None,
+) -> str | None:
+    """Upsert claim + sources + optional event for one record.
+
+    Any failure is logged and isolated to this record.
+    """
+    try:
+        claim_obj = claim_from_record(record)
+    except Exception as e:
+        logger.warning("Claim canonicalization failed for record %s: %s", record, e)
+        return None
+
+    claim_id = claim_obj["id"]
+    try:
+        upsert_claim(
+            claim_id=claim_id,
+            claim_type=claim_obj["claim_type"],
+            canonical_text=claim_obj["canonical_text"],
+            payload=claim_obj["payload"],
+            status=status,
+            confidence=confidence,
+            valid_from=valid_from,
+            valid_until=valid_until,
+        )
+    except Exception as e:
+        logger.warning("Failed to upsert claim %s: %s", claim_id, e)
+        return None
+
+    source_rows: list[dict] = []
+    if source_episode_ids:
+        for episode_id in source_episode_ids:
+            source_rows.append(
+                {
+                    "source_episode_id": episode_id,
+                    "source_topic_id": topic_id,
+                    "source_record_id": source_record_id,
+                }
+            )
+    else:
+        source_rows.append(
+            {
+                "source_episode_id": None,
+                "source_topic_id": topic_id,
+                "source_record_id": source_record_id,
+            }
+        )
+
+    try:
+        insert_claim_sources(claim_id, source_rows)
+    except Exception as e:
+        logger.warning("Failed to insert claim sources for %s: %s", claim_id, e)
+
+    if event_type:
+        details: dict[str, object] = {"topic_id": topic_id}
+        if source_record_id:
+            details["source_record_id"] = source_record_id
+        if event_details:
+            details.update(event_details)
+        try:
+            insert_claim_event(claim_id, event_type=event_type, details=details)
+        except Exception as e:
+            logger.warning("Failed to insert claim event (%s) for %s: %s", event_type, claim_id, e)
+
+    return claim_id
+
+
+def _emit_claims_for_records(
+    records: list[dict],
+    *,
+    topic_id: str,
+    source_episode_ids: list[str],
+    source_record_ids: list[str] | None,
+    confidence: float,
+    default_valid_from: str | None = None,
+    event_type: str,
+) -> list[str]:
+    """Emit claims for a record list. Returns claim IDs emitted successfully."""
+    claim_ids: list[str] = []
+    for idx, rec in enumerate(records):
+        source_record_id = None
+        if source_record_ids and idx < len(source_record_ids):
+            source_record_id = source_record_ids[idx]
+        claim_id = _materialize_claim_for_record(
+            rec,
+            topic_id=topic_id,
+            source_episode_ids=source_episode_ids,
+            source_record_id=source_record_id,
+            confidence=confidence,
+            valid_from=default_valid_from,
+            event_type=event_type,
+        )
+        if claim_id:
+            claim_ids.append(claim_id)
+    return claim_ids
+
+
 def _merge_into_existing(
     existing: dict,
     extraction_data: dict,
@@ -316,36 +534,72 @@ def _merge_into_existing(
         existing_tags=existing_tags,
     )
 
+    merge_calls = 0
     try:
         merged_data, merge_calls = _llm_extract_with_validation(merge_prompt, cluster_episodes)
-    except ValueError as e:
-        logger.error("LLM merge returned invalid JSON for %s: %s", existing["filename"], e)
-        increment_consolidation_attempts(cluster_ep_ids)
-        return "failed", 1
-
-    merged_title = merged_data.get("title", existing["title"])
-    merged_summary = merged_data.get("summary", existing["summary"])
-    merged_tags = merged_data.get("tags", existing_tags)
-    merged_records = merged_data.get("records", [])
+        merged_title = merged_data.get("title", existing["title"])
+        merged_summary = merged_data.get("summary", existing["summary"])
+        merged_tags = merged_data.get("tags", existing_tags)
+        merged_records = merged_data.get("records", [])
+    except Exception as e:
+        logger.warning(
+            "LLM merge failed for %s (%s); using deterministic merge fallback",
+            existing["filename"],
+            e,
+        )
+        merged_title, merged_summary, merged_tags, merged_records = _build_deterministic_merge_payload(
+            existing_records=existing_records,
+            new_records=new_records,
+            existing_title=existing["title"],
+            existing_summary=existing["summary"],
+            existing_tags=existing_tags,
+            extraction_data=extraction_data,
+        )
 
     if not merged_records:
-        logger.error(
-            "LLM merge produced no records for %s; original preserved.", existing["filename"]
+        logger.warning(
+            "Merged result for %s had no records; retrying deterministic merge",
+            existing["filename"],
         )
-        increment_consolidation_attempts(cluster_ep_ids)
-        return "failed", merge_calls
+        merged_title, merged_summary, merged_tags, merged_records = _build_deterministic_merge_payload(
+            existing_records=existing_records,
+            new_records=new_records,
+            existing_title=existing["title"],
+            existing_summary=existing["summary"],
+            existing_tags=existing_tags,
+            extraction_data=extraction_data,
+        )
+        if not merged_records:
+            logger.error("Deterministic merge also produced no records for %s", existing["filename"])
+            increment_consolidation_attempts(cluster_ep_ids)
+            return "failed", merge_calls
 
     # Guard: reject merge if LLM drastically reduced record count
     if len(existing_db_records) >= 4 and len(merged_records) < len(existing_db_records) * 0.5:
-        logger.error(
-            "LLM merge for %s dropped too many records (%d -> %d); "
-            "rejecting merge to prevent data loss.",
+        logger.warning(
+            "Merge for %s dropped too many records (%d -> %d); "
+            "using deterministic merge fallback to prevent data loss.",
             existing["filename"],
             len(existing_db_records),
             len(merged_records),
         )
-        increment_consolidation_attempts(cluster_ep_ids)
-        return "failed", merge_calls
+        merged_title, merged_summary, merged_tags, merged_records = _build_deterministic_merge_payload(
+            existing_records=existing_records,
+            new_records=new_records,
+            existing_title=existing["title"],
+            existing_summary=existing["summary"],
+            existing_tags=existing_tags,
+            extraction_data=extraction_data,
+        )
+        if len(existing_db_records) >= 4 and len(merged_records) < len(existing_db_records) * 0.5:
+            logger.error(
+                "Deterministic merge still dropped too many records for %s (%d -> %d)",
+                existing["filename"],
+                len(existing_db_records),
+                len(merged_records),
+            )
+            increment_consolidation_attempts(cluster_ep_ids)
+            return "failed", merge_calls
 
     # Detect silent drops: pre-merge records not preserved in merged output
     cfg = get_config()
@@ -383,6 +637,35 @@ def _merge_into_existing(
     contradictions = _detect_contradictions(new_for_detection, existing_db_records)
     contradicted_existing_ids = {ex_id for _, ex_id in contradictions}
 
+    if contradicted_existing_ids:
+        contradicted_keys: set[tuple] = set()
+        for row in existing_db_records:
+            if row["id"] not in contradicted_existing_ids:
+                continue
+            content = row.get("content", {})
+            if isinstance(content, str):
+                try:
+                    content = json.loads(content)
+                except (json.JSONDecodeError, TypeError):
+                    content = {}
+            if isinstance(content, dict):
+                contradicted_keys.add(_record_dedup_key(content))
+        if contradicted_keys:
+            merged_records = [
+                rec for rec in merged_records
+                if _record_dedup_key(rec) not in contradicted_keys
+            ]
+            if not merged_records:
+                logger.warning(
+                    "All merged records for %s were contradicted old claims; "
+                    "falling back to deduped new records only.",
+                    existing["filename"],
+                )
+                merged_records = _dedupe_records(new_records)
+                if not merged_records:
+                    increment_consolidation_attempts(cluster_ep_ids)
+                    return "failed", merge_calls
+
     now_ts = datetime.now(timezone.utc).isoformat()
 
     # Log contradictions to audit log before expiring
@@ -391,11 +674,13 @@ def _merge_into_existing(
     for new_idx, ex_id in contradictions:
         old_rec = existing_by_id.get(ex_id, {})
         old_content = old_rec.get("content", "")
+        old_content_dict = _coerce_content_dict(old_content)
         if isinstance(old_content, dict):
             old_content = json.dumps(old_content)
         new_content = json.dumps(new_for_detection[new_idx])
+        contradiction_id: str | None = None
         try:
-            insert_contradiction(
+            contradiction_id = insert_contradiction(
                 topic_id=existing["id"],
                 old_record_id=ex_id,
                 new_record_id=None,
@@ -412,6 +697,66 @@ def _merge_into_existing(
         except Exception as e:
             logger.warning("Failed to log contradiction: %s", e)
 
+        # Emit claim-level contradiction linkage and events (best-effort).
+        new_claim_id = _materialize_claim_for_record(
+            new_records[new_idx],
+            topic_id=existing["id"],
+            source_episode_ids=cluster_ep_ids,
+            source_record_id=None,
+            confidence=confidence,
+            valid_from=now_ts,
+            event_type=None,
+        )
+        old_claim_id = None
+        if old_content_dict:
+            old_claim_id = _materialize_claim_for_record(
+                old_content_dict,
+                topic_id=existing["id"],
+                source_episode_ids=[],
+                source_record_id=ex_id,
+                confidence=float(old_rec.get("confidence", confidence) or confidence),
+                valid_from=old_rec.get("valid_from") or old_rec.get("created_at"),
+                event_type=None,
+            )
+
+        if new_claim_id and old_claim_id:
+            contradiction_details = {
+                "topic_id": existing["id"],
+                "topic_filename": existing["filename"],
+                "old_record_id": ex_id,
+                "new_record_index": new_idx,
+            }
+            if contradiction_id:
+                contradiction_details["contradiction_id"] = contradiction_id
+            try:
+                insert_claim_edge(
+                    from_claim_id=new_claim_id,
+                    to_claim_id=old_claim_id,
+                    edge_type="contradicts",
+                    details=contradiction_details,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to insert contradiction edge (%s -> %s): %s",
+                    new_claim_id,
+                    old_claim_id,
+                    e,
+                )
+
+            for claim_id, role in ((new_claim_id, "new"), (old_claim_id, "old")):
+                try:
+                    insert_claim_event(
+                        claim_id,
+                        event_type="contradiction",
+                        details={**contradiction_details, "role": role},
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to insert contradiction claim event for %s: %s",
+                        claim_id,
+                        e,
+                    )
+
     # Reduce confidence by 10% when contradictions are detected
     if contradicted_existing_ids:
         confidence = confidence * 0.9
@@ -420,6 +765,38 @@ def _merge_into_existing(
     for ex_id in contradicted_existing_ids:
         expire_record(ex_id, valid_until=now_ts)
         logger.info("Expired contradicted record %s in topic %s", ex_id, existing["filename"])
+        old_rec = existing_by_id.get(ex_id, {})
+        old_content_dict = _coerce_content_dict(old_rec.get("content", {}))
+        if not old_content_dict:
+            continue
+        claim_id = _materialize_claim_for_record(
+            old_content_dict,
+            topic_id=existing["id"],
+            source_episode_ids=[],
+            source_record_id=ex_id,
+            confidence=float(old_rec.get("confidence", confidence) or confidence),
+            valid_from=old_rec.get("valid_from") or old_rec.get("created_at"),
+            event_type=None,
+        )
+        if not claim_id:
+            continue
+        try:
+            expire_claim(claim_id, valid_until=now_ts)
+        except Exception as e:
+            logger.warning("Failed to expire claim %s for record %s: %s", claim_id, ex_id, e)
+        try:
+            insert_claim_event(
+                claim_id,
+                event_type="expire",
+                details={
+                    "topic_id": existing["id"],
+                    "topic_filename": existing["filename"],
+                    "record_id": ex_id,
+                    "reason": "contradiction",
+                },
+            )
+        except Exception as e:
+            logger.warning("Failed to insert expire claim event for %s: %s", claim_id, e)
 
     # Soft-delete remaining old records (non-contradicted ones replaced by merge)
     non_contradicted_ids = [
@@ -446,7 +823,20 @@ def _merge_into_existing(
         if has_contradictions:
             row["valid_from"] = now_ts
         record_rows.append(row)
-    insert_knowledge_records(existing["id"], record_rows, source_episodes=cluster_ep_ids)
+    inserted_record_ids = insert_knowledge_records(
+        existing["id"],
+        record_rows,
+        source_episodes=cluster_ep_ids,
+    )
+    _emit_claims_for_records(
+        merged_records,
+        topic_id=existing["id"],
+        source_episode_ids=cluster_ep_ids,
+        source_record_ids=inserted_record_ids,
+        confidence=confidence,
+        default_valid_from=now_ts if has_contradictions else None,
+        event_type="update",
+    )
 
     # Render markdown
     if get_config().RENDER_MARKDOWN:
@@ -600,7 +990,19 @@ def _process_cluster(
                     "confidence": confidence,
                 }
             )
-        insert_knowledge_records(topic_id, record_rows, source_episodes=cluster_ep_ids)
+        inserted_record_ids = insert_knowledge_records(
+            topic_id,
+            record_rows,
+            source_episodes=cluster_ep_ids,
+        )
+        _emit_claims_for_records(
+            records,
+            topic_id=topic_id,
+            source_episode_ids=cluster_ep_ids,
+            source_record_ids=inserted_record_ids,
+            confidence=confidence,
+            event_type="create",
+        )
 
         # Render markdown file
         if cfg.RENDER_MARKDOWN:

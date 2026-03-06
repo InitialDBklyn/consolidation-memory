@@ -1,5 +1,7 @@
 """Tests for schema-guided knowledge extraction (v0.5.0 records)."""
 
+from unittest.mock import patch
+
 from consolidation_memory.database import (
     ensure_schema,
     get_all_active_records,
@@ -141,6 +143,7 @@ class TestRecordTypes:
         from consolidation_memory.types import RecallResult
         r = RecallResult()
         assert r.records == []
+        assert r.claims == []
 
 
 # ── Extraction validation ────────────────────────────────────────────────────
@@ -225,6 +228,33 @@ class TestExtractionValidation:
         valid, failures = _validate_extraction_output(data, [])
         assert not valid
         assert any("procedure missing" in f for f in failures)
+
+    def test_extract_with_validation_uses_json_schema(self):
+        from consolidation_memory.consolidation.prompting import _llm_extract_with_validation
+
+        captured_schema = []
+
+        def fake_call(prompt, max_retries=3, json_schema=None):
+            captured_schema.append(json_schema)
+            return (
+                '{"title":"T","summary":"Python 3.12 is installed",'
+                '"tags":["python"],'
+                '"records":[{"type":"fact","subject":"Python","info":"3.12"}]}'
+            )
+
+        with patch(
+            "consolidation_memory.consolidation.prompting._call_llm",
+            side_effect=fake_call,
+        ):
+            data, calls = _llm_extract_with_validation(
+                "prompt",
+                [{"content": "python 3.12", "created_at": "2026-01-01"}],
+            )
+
+        assert calls == 1
+        assert data["title"] == "T"
+        assert captured_schema and captured_schema[0] is not None
+        assert "records" in captured_schema[0]["properties"]
 
 
 # ── JSON parsing ─────────────────────────────────────────────────────────────

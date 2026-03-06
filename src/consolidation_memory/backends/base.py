@@ -38,3 +38,12 @@ class LLMBackend(Protocol):
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         """Generate a completion given system and user prompts."""
         ...
+
+    def generate_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        json_schema: dict,
+    ) -> str:
+        """Generate a JSON completion conforming to the supplied schema."""
+        ...

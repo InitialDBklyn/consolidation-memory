@@ -4,7 +4,7 @@ Run with: python -m pytest tests/test_client.py -v
 """
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from helpers import make_normalized_vec as _make_normalized_vec
 
@@ -126,6 +126,38 @@ class TestClientRecall:
         assert len(result.episodes) == 0
 
         client.close()
+
+    def test_recall_surfaces_claims_field(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            fake_recall = {
+                "episodes": [],
+                "knowledge": [],
+                "records": [],
+                "claims": [{"id": "claim-1", "canonical_text": "python runtime is 3.12"}],
+                "warnings": [],
+            }
+            fake_stats = {
+                "episodic_buffer": {"total": 0},
+                "knowledge_base": {"total_topics": 0},
+            }
+
+            with (
+                patch("consolidation_memory.context_assembler.recall", return_value=fake_recall),
+                patch("consolidation_memory.database.get_stats", return_value=fake_stats),
+            ):
+                result = client.recall("python runtime")
+
+            assert result.claims == fake_recall["claims"]
+            assert result.episodes == []
+            assert result.knowledge == []
+            assert result.records == []
+        finally:
+            client.close()
 
 
 class TestClientForget:
@@ -287,3 +319,74 @@ class TestClientConsolidate:
 
         client._consolidation_lock.release()
         client.close()
+
+
+class TestClientCorrect:
+    def test_correct_updates_structured_records(self, tmp_data_dir):
+        from consolidation_memory.client import MemoryClient
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_records_by_topic,
+            insert_knowledge_records,
+            upsert_knowledge_topic,
+        )
+
+        ensure_schema()
+        cfg = get_config()
+        filename = "python.md"
+        (cfg.KNOWLEDGE_DIR / filename).write_text(
+            "---\ntitle: Python\nsummary: Python 3.12\n---\n\n## Facts\n- **Python**: 3.12\n",
+            encoding="utf-8",
+        )
+        topic_id = upsert_knowledge_topic(
+            filename=filename,
+            title="Python",
+            summary="Python 3.12",
+            source_episodes=["ep1"],
+            fact_count=1,
+            confidence=0.8,
+        )
+        insert_knowledge_records(
+            topic_id,
+            records=[{
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "Python", "info": "3.12"},
+                "embedding_text": "Python: 3.12",
+                "confidence": 0.8,
+            }],
+            source_episodes=["ep1"],
+        )
+
+        corrected_md = (
+            "---\n"
+            "title: Python\n"
+            "summary: Python 3.13\n"
+            "tags: [python]\n"
+            "confidence: 0.9\n"
+            "---\n\n"
+            "## Facts\n"
+            "- **Python**: 3.13\n"
+        )
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = corrected_md
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with patch("consolidation_memory.backends.get_llm_backend", return_value=mock_llm):
+                result = client.correct(filename, "Python version changed to 3.13")
+
+            assert result.status == "corrected"
+
+            active = get_records_by_topic(topic_id, include_expired=False)
+            assert len(active) == 1
+            active_content = json.loads(active[0]["content"])
+            assert active_content["info"] == "3.13"
+            assert active[0]["valid_from"] is not None
+
+            all_records = get_records_by_topic(topic_id, include_expired=True)
+            assert len(all_records) == 2
+            old = next(r for r in all_records if json.loads(r["content"]).get("info") == "3.12")
+            assert old["valid_until"] is not None
+        finally:
+            client.close()

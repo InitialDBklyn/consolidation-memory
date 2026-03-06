@@ -77,35 +77,86 @@ class LMStudioLLMBackend:
         self._temperature = temperature
         self._min_p = min_p
 
+    def _build_payload(self, system_prompt: str, user_prompt: str) -> dict:
+        return {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_tokens": self._max_tokens,
+            "temperature": self._temperature,
+            "min_p": self._min_p,
+            "top_p": 1.0,
+            "top_k": 0,
+            "repeat_penalty": 1.0,
+            "frequency_penalty": 0.0,
+            "presence_penalty": 0.0,
+        }
+
+    def _chat_completion(self, payload: dict) -> str:
+        response = httpx.post(
+            f"{self._api_base}/chat/completions",
+            json=payload,
+            timeout=120.0,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        if content is None:
+            raise ValueError("LLM returned empty response (message.content is None)")
+        return str(content)
+
     def generate(self, system_prompt: str, user_prompt: str) -> str:
         from consolidation_memory.backends import retry_with_backoff
 
+        payload = self._build_payload(system_prompt, user_prompt)
+
         def _do() -> str:
-            response = httpx.post(
-                f"{self._api_base}/chat/completions",
-                json={
-                    "model": self._model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "max_tokens": self._max_tokens,
-                    "temperature": self._temperature,
-                    "min_p": self._min_p,
-                    "top_p": 1.0,
-                    "top_k": 0,
-                    "repeat_penalty": 1.0,
-                    "frequency_penalty": 0.0,
-                    "presence_penalty": 0.0,
-                },
-                timeout=120.0,
-            )
-            response.raise_for_status()
-            return str(response.json()["choices"][0]["message"]["content"])
+            return self._chat_completion(payload)
 
         result: str = retry_with_backoff(
             _do,
             transient_exceptions=_TRANSIENT,
             context="LM Studio LLM",
+        )
+        return result
+
+    def generate_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        json_schema: dict,
+    ) -> str:
+        from consolidation_memory.backends import retry_with_backoff
+
+        payload = self._build_payload(system_prompt, user_prompt)
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "consolidation_extraction",
+                "strict": True,
+                "schema": json_schema,
+            },
+        }
+
+        def _do() -> str:
+            try:
+                return self._chat_completion(payload)
+            except httpx.HTTPStatusError as e:
+                # Some OpenAI-compatible servers reject response_format=json_schema.
+                if e.response.status_code in {400, 404, 415, 422}:
+                    logger.warning(
+                        "Structured output unsupported by LM Studio server (%s); "
+                        "retrying without response_format",
+                        e.response.status_code,
+                    )
+                    fallback_payload = self._build_payload(system_prompt, user_prompt)
+                    return self._chat_completion(fallback_payload)
+                raise
+
+        result: str = retry_with_backoff(
+            _do,
+            transient_exceptions=_TRANSIENT,
+            context="LM Studio LLM JSON",
         )
         return result

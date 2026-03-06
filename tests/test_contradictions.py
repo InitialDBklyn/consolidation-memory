@@ -1,5 +1,7 @@
 """Tests for contradiction audit log and diff-aware merge validation."""
 
+import json
+
 from unittest.mock import patch
 
 import numpy as np
@@ -326,6 +328,159 @@ class TestContradictionsDuringConsolidation:
         assert len(new_recs) >= 1
         for rec in new_recs:
             assert abs(rec["confidence"] - 0.72) < 0.01
+
+    def test_deterministic_fallback_when_llm_merge_fails(self, tmp_data_dir):
+        """LLM merge failures should fall back to deterministic in-code merge."""
+        ensure_schema()
+
+        tid = upsert_knowledge_topic(
+            filename="fallback_fail.md",
+            title="Fallback Fail",
+            summary="Old summary",
+            source_episodes=["ep_old"],
+        )
+        insert_knowledge_records(tid, [
+            {
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "A", "info": "old"},
+                "embedding_text": "A: old",
+                "confidence": 0.8,
+            },
+        ])
+
+        extraction_data = {
+            "title": "Fallback Fail Updated",
+            "summary": "New summary",
+            "tags": ["merge"],
+            "records": [
+                {"type": "fact", "subject": "B", "info": "new"},
+            ],
+        }
+        existing = {
+            "id": tid,
+            "filename": "fallback_fail.md",
+            "title": "Fallback Fail",
+            "summary": "Old summary",
+        }
+
+        with (
+            patch("consolidation_memory.consolidation.engine._llm_extract_with_validation") as mock_llm,
+            patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode,
+            override_config(
+                RENDER_MARKDOWN=False,
+                MERGE_DROP_DETECTION_ENABLED=False,
+                CONTRADICTION_LLM_ENABLED=False,
+                CONTRADICTION_SIMILARITY_THRESHOLD=0.99,
+            ),
+        ):
+            mock_llm.side_effect = TimeoutError("LLM merge timed out")
+            # New vs existing are dissimilar; no contradiction path.
+            new_vec = np.array([[1.0, 0.0]], dtype=np.float32)
+            existing_vec = np.array([[0.0, 1.0]], dtype=np.float32)
+            mock_encode.side_effect = [new_vec, existing_vec]
+
+            from consolidation_memory.consolidation.engine import _merge_into_existing
+
+            status, calls = _merge_into_existing(
+                existing=existing,
+                extraction_data=extraction_data,
+                cluster_episodes=[{"id": "ep_new", "content": "new data", "tags": "[]"}],
+                cluster_ep_ids=["ep_new"],
+                confidence=0.8,
+            )
+
+        assert status == "updated"
+        assert calls == 0
+        rows = get_records_by_topic(tid)
+        subjects = set()
+        for row in rows:
+            content = row["content"]
+            if isinstance(content, str):
+                content = json.loads(content)
+            subjects.add(content.get("subject"))
+        assert {"A", "B"}.issubset(subjects)
+
+    def test_deterministic_fallback_when_llm_drops_too_many_records(self, tmp_data_dir):
+        """Aggressive LLM merge drops should use deterministic merge fallback."""
+        ensure_schema()
+
+        tid = upsert_knowledge_topic(
+            filename="fallback_drop.md",
+            title="Fallback Drop",
+            summary="S",
+            source_episodes=["ep_old"],
+        )
+        insert_knowledge_records(tid, [
+            {
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "A", "info": "1"},
+                "embedding_text": "A: 1",
+            },
+            {
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "B", "info": "2"},
+                "embedding_text": "B: 2",
+            },
+            {
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "C", "info": "3"},
+                "embedding_text": "C: 3",
+            },
+            {
+                "record_type": "fact",
+                "content": {"type": "fact", "subject": "D", "info": "4"},
+                "embedding_text": "D: 4",
+            },
+        ])
+
+        extraction_data = {
+            "title": "Fallback Drop",
+            "summary": "S",
+            "tags": [],
+            "records": [{"type": "fact", "subject": "E", "info": "5"}],
+        }
+        existing = {
+            "id": tid,
+            "filename": "fallback_drop.md",
+            "title": "Fallback Drop",
+            "summary": "S",
+        }
+
+        with (
+            patch("consolidation_memory.consolidation.engine._llm_extract_with_validation") as mock_llm,
+            patch("consolidation_memory.consolidation.engine.encode_documents") as mock_encode,
+            override_config(
+                RENDER_MARKDOWN=False,
+                MERGE_DROP_DETECTION_ENABLED=False,
+                CONTRADICTION_LLM_ENABLED=False,
+                CONTRADICTION_SIMILARITY_THRESHOLD=0.99,
+            ),
+        ):
+            # Simulate over-compressed merge from LLM: 4 existing -> 1 merged.
+            mock_llm.return_value = ({
+                "title": "Fallback Drop",
+                "summary": "S",
+                "tags": [],
+                "records": [{"type": "fact", "subject": "A", "info": "1"}],
+            }, 1)
+            new_vec = np.array([[1.0, 0.0]], dtype=np.float32)
+            existing_vec = np.array([[0.0, 1.0]] * 4, dtype=np.float32)
+            mock_encode.side_effect = [new_vec, existing_vec]
+
+            from consolidation_memory.consolidation.engine import _merge_into_existing
+
+            status, calls = _merge_into_existing(
+                existing=existing,
+                extraction_data=extraction_data,
+                cluster_episodes=[{"id": "ep_new2", "content": "new data", "tags": "[]"}],
+                cluster_ep_ids=["ep_new2"],
+                confidence=0.8,
+            )
+
+        assert status == "updated"
+        assert calls == 1
+        rows = get_records_by_topic(tid)
+        assert len(rows) >= 5
 
 
 # ── MCP tool ─────────────────────────────────────────────────────────────────

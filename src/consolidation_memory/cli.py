@@ -379,9 +379,12 @@ def cmd_export():
     episodes = get_all_episodes(include_deleted=False)
     topics = get_all_knowledge_topics()
     knowledge = []
+    knowledge_resolved = cfg.KNOWLEDGE_DIR.resolve()
     for topic in topics:
-        filepath = cfg.KNOWLEDGE_DIR / topic["filename"]
-        content = filepath.read_text(encoding="utf-8") if filepath.exists() else ""
+        filepath = (cfg.KNOWLEDGE_DIR / topic["filename"]).resolve()
+        content = ""
+        if filepath.is_relative_to(knowledge_resolved) and filepath.exists():
+            content = filepath.read_text(encoding="utf-8")
         knowledge.append({**topic, "file_content": content})
 
     records = get_all_active_records()
@@ -547,7 +550,7 @@ def cmd_import(path: str):
                 continue
             filepath.write_text(topic["file_content"], encoding="utf-8")
 
-        source_eps = parse_json_list(topic["source_episodes"])
+        source_eps = parse_json_list(topic.get("source_episodes"))
         upsert_knowledge_topic(
             filename=topic["filename"],
             title=topic["title"],

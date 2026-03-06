@@ -66,6 +66,42 @@ class StatsDict(TypedDict):
     knowledge_base: KnowledgeBaseStats
 
 
+class ClaimQueryResult(TypedDict):
+    """Row shape for claim-query database results."""
+    id: str
+    claim_type: str
+    canonical_text: str
+    payload: str
+    status: str
+    confidence: float
+    valid_from: str
+    valid_until: str | None
+    created_at: str
+    updated_at: str
+
+
+class DriftAnchor(TypedDict):
+    """Anchor used for drift impact lookups."""
+    anchor_type: str
+    anchor_value: str
+
+
+class DriftClaimImpact(TypedDict):
+    """Per-claim drift impact status transition."""
+    claim_id: str
+    previous_status: str
+    new_status: str
+    matched_anchors: list[DriftAnchor]
+
+
+class DriftOutput(TypedDict):
+    """Aggregated drift-detection output payload."""
+    checked_anchors: list[DriftAnchor]
+    impacted_claim_ids: list[str]
+    challenged_claim_ids: list[str]
+    impacts: list[DriftClaimImpact]
+
+
 class HealthStatus(TypedDict):
     """Health assessment of the memory system."""
     status: str  # "healthy" | "degraded" | "error" — dynamically computed
@@ -132,6 +168,7 @@ class RecallResult:
     episodes: list[dict[str, Any]] = field(default_factory=list)
     knowledge: list[dict[str, Any]] = field(default_factory=list)
     records: list[dict[str, Any]] = field(default_factory=list)
+    claims: list[dict[str, Any]] = field(default_factory=list)
     total_episodes: int = 0
     total_knowledge_topics: int = 0
     message: str | None = None
