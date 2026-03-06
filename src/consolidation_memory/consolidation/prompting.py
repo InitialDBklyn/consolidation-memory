@@ -204,7 +204,11 @@ def _call_llm(
                 future = executor.submit(llm.generate, _LLM_SYSTEM_PROMPT, prompt)
             result = future.result(timeout=get_config().LLM_CALL_TIMEOUT)
             cb.record_success()
-            return result
+            if isinstance(result, str):
+                return result
+            if json_schema is not None:
+                return json.dumps(result, default=str)
+            return str(result)
         except concurrent.futures.TimeoutError:
             future.cancel()
             last_err = TimeoutError(f"LLM call timed out after {get_config().LLM_CALL_TIMEOUT}s")

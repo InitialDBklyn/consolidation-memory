@@ -743,17 +743,17 @@ def _merge_into_existing(
                     e,
                 )
 
-            for claim_id, role in ((new_claim_id, "new"), (old_claim_id, "old")):
+            for contradiction_claim_id, role in ((new_claim_id, "new"), (old_claim_id, "old")):
                 try:
                     insert_claim_event(
-                        claim_id,
+                        contradiction_claim_id,
                         event_type="contradiction",
                         details={**contradiction_details, "role": role},
                     )
                 except Exception as e:
                     logger.warning(
                         "Failed to insert contradiction claim event for %s: %s",
-                        claim_id,
+                        contradiction_claim_id,
                         e,
                     )
 
@@ -769,7 +769,7 @@ def _merge_into_existing(
         old_content_dict = _coerce_content_dict(old_rec.get("content", {}))
         if not old_content_dict:
             continue
-        claim_id = _materialize_claim_for_record(
+        expired_claim_id = _materialize_claim_for_record(
             old_content_dict,
             topic_id=existing["id"],
             source_episode_ids=[],
@@ -778,15 +778,15 @@ def _merge_into_existing(
             valid_from=old_rec.get("valid_from") or old_rec.get("created_at"),
             event_type=None,
         )
-        if not claim_id:
+        if not expired_claim_id:
             continue
         try:
-            expire_claim(claim_id, valid_until=now_ts)
+            expire_claim(expired_claim_id, valid_until=now_ts)
         except Exception as e:
-            logger.warning("Failed to expire claim %s for record %s: %s", claim_id, ex_id, e)
+            logger.warning("Failed to expire claim %s for record %s: %s", expired_claim_id, ex_id, e)
         try:
             insert_claim_event(
-                claim_id,
+                expired_claim_id,
                 event_type="expire",
                 details={
                     "topic_id": existing["id"],
@@ -796,7 +796,7 @@ def _merge_into_existing(
                 },
             )
         except Exception as e:
-            logger.warning("Failed to insert expire claim event for %s: %s", claim_id, e)
+            logger.warning("Failed to insert expire claim event for %s: %s", expired_claim_id, e)
 
     # Soft-delete remaining old records (non-contradicted ones replaced by merge)
     non_contradicted_ids = [

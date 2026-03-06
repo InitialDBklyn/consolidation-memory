@@ -14,7 +14,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from consolidation_memory.config import get_config as _get_config
 from consolidation_memory.types import RUN_STATUS_COMPLETED, RunStatus, StatsDict
@@ -1328,7 +1328,7 @@ def insert_claim_event(
     return eid
 
 
-def insert_episode_anchors(episode_id: str, anchors: list[dict[str, Any]]) -> list[str]:
+def insert_episode_anchors(episode_id: str, anchors: Sequence[Mapping[str, Any]]) -> list[str]:
     """Insert anchors for an episode. Duplicate anchors are ignored."""
     if not anchors:
         return []

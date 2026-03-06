@@ -5,21 +5,42 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://pypi.org/project/consolidation-memory/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Local-first persistent memory for AI agents. SQLite + FAISS, runs on a laptop, no cloud.
+Local-first persistent memory for coding agents.
 
-Agents store episodes (conversations, facts, solutions). A background thread periodically clusters related episodes and uses a local LLM to synthesize them into structured knowledge records. Old episodes get pruned. Knowledge compounds over time instead of degrading.
+`consolidation-memory` stores raw episodes, consolidates them into structured knowledge, and now tracks claim-level provenance and contradiction history. It runs on SQLite + FAISS and can be used through MCP, Python, REST, or OpenAI-style function calling.
 
-## Install
+## What It Does
+
+- Stores episodes (`exchange`, `fact`, `solution`, `preference`) with vector embeddings.
+- Recalls by semantic + keyword ranking with metadata boosts.
+- Consolidates episodes into knowledge topics and structured records:
+  - `fact`, `solution`, `preference`, `procedure`
+- Tracks temporal validity (`valid_from`, `valid_until`) and supports `as_of` recall queries.
+- Logs contradictions and supports contradiction-aware merge behavior.
+- Maintains a claim graph:
+  - claims
+  - claim edges (for example, `contradicts`)
+  - claim sources
+  - claim events
+- Extracts and persists episode anchors (paths, commits, tool references).
+- Returns claim results in `recall()` alongside episodes, topics, and records.
+
+## Quick Start
 
 ```bash
 pip install consolidation-memory[fastembed]
 consolidation-memory init
-consolidation-memory setup-claude  # Add memory instructions to CLAUDE.md
+consolidation-memory test
+consolidation-memory serve
 ```
 
-FastEmbed runs locally. No API keys needed. The `setup-claude` command adds instructions to your `~/.claude/CLAUDE.md` so Claude Code proactively uses memory tools.
+Notes:
+- `fastembed` is local and does not require API keys.
+- Consolidation requires an LLM backend (`lmstudio`, `ollama`, `openai`) unless explicitly disabled.
 
 ## MCP Server
+
+Add to your MCP client config:
 
 ```json
 {
@@ -31,272 +52,226 @@ FastEmbed runs locally. No API keys needed. The `setup-claude` command adds inst
 }
 ```
 
-Tools: `memory_store`, `memory_store_batch`, `memory_recall`, `memory_search`, `memory_status`, `memory_forget`, `memory_export`, `memory_correct`, `memory_compact`, `memory_consolidate`, `memory_browse`, `memory_read_topic`, `memory_timeline`, `memory_decay_report`, `memory_protect`
+Available tools:
+- `memory_store`
+- `memory_store_batch`
+- `memory_recall`
+- `memory_search`
+- `memory_status`
+- `memory_forget`
+- `memory_export`
+- `memory_correct`
+- `memory_compact`
+- `memory_consolidate`
+- `memory_protect`
+- `memory_timeline`
+- `memory_contradictions`
+- `memory_browse`
+- `memory_read_topic`
+- `memory_decay_report`
+- `memory_consolidation_log`
 
 ## Python API
 
 ```python
 from consolidation_memory import MemoryClient
 
-with MemoryClient() as mem:
-    mem.store("User prefers dark mode", content_type="preference", tags=["ui"])
+with MemoryClient(auto_consolidate=False) as mem:
+    mem.store(
+        "User prefers dark mode in terminal tools.",
+        content_type="preference",
+        tags=["ui", "terminal"],
+    )
 
-    result = mem.recall("user interface preferences")
-    for ep in result.episodes:
-        print(ep["content"], ep["similarity"])
+    result = mem.recall(
+        "terminal preferences",
+        n_results=5,
+        include_knowledge=True,
+        as_of="2026-03-01T00:00:00+00:00",
+    )
+
+    print("episodes:", len(result.episodes))
+    print("knowledge topics:", len(result.knowledge))
+    print("records:", len(result.records))
+    print("claims:", len(result.claims))
+    print("warnings:", result.warnings)
 ```
+
+`RecallResult` is backward compatible and includes:
+- `episodes`
+- `knowledge`
+- `records`
+- `claims`
+- `warnings`
+
+## Consolidation Model
+
+```text
+episodes -> SQLite + FAISS
+           -> recall (semantic + keyword)
+
+background consolidation:
+episodes -> cluster -> extract/merge records -> knowledge topics
+         -> contradiction detection -> temporal expiration + audit log
+         -> claim emission (claims/sources/events/edges)
+```
+
+## Claims And Anchors
+
+### Claim graph
+
+Consolidation emits deterministic claims for merged records and writes:
+- `claims`: normalized claim payload and lifecycle state
+- `claim_sources`: links to episodes/topics/records
+- `claim_events`: `create`, `update`, `expire`, `contradiction`, etc.
+- `claim_edges`: relationship graph (for example, `contradicts`)
+
+### Anchor persistence
+
+Stored episode content is parsed for anchors and written to `episode_anchors`:
+- file paths (POSIX + Windows)
+- commit hashes
+- tool references (`pytest`, `uvicorn`, `docker`, `git`, etc.)
+
+Anchors are used for drift workflows and claim challenge operations.
+
+## REST API
+
+Install extras and run:
+
+```bash
+pip install consolidation-memory[rest]
+consolidation-memory serve --rest --host 127.0.0.1 --port 8080
+```
+
+Endpoints:
+- `GET /health`
+- `POST /memory/store`
+- `POST /memory/store/batch`
+- `POST /memory/recall`
+- `POST /memory/search`
+- `GET /memory/status`
+- `DELETE /memory/episodes/{episode_id}`
+- `POST /memory/consolidate`
+- `POST /memory/correct`
+- `POST /memory/export`
+- `POST /memory/compact`
+- `GET /memory/browse`
+- `GET /memory/topics/{filename}`
+- `POST /memory/timeline`
+- `POST /memory/contradictions`
+- `POST /memory/protect`
+- `POST /memory/consolidation-log`
+- `GET /memory/decay-report`
 
 ## OpenAI Function Calling
 
-Works with any OpenAI-compatible API (LM Studio, Ollama, OpenAI, Azure):
+Use the provided tool schemas and dispatch helper:
 
 ```python
 from consolidation_memory import MemoryClient
 from consolidation_memory.schemas import openai_tools, dispatch_tool_call
 
-mem = MemoryClient()
-# Pass openai_tools to your chat completion, dispatch results with dispatch_tool_call()
+client = MemoryClient(auto_consolidate=False)
+
+# Pass openai_tools to your model
+# Then route tool calls through dispatch_tool_call(client, name, arguments)
 ```
-
-## REST API
-
-```bash
-pip install consolidation-memory[rest]
-consolidation-memory serve --rest --port 8080
-```
-
-`POST /memory/store` | `POST /memory/store/batch` | `POST /memory/recall` | `POST /memory/search` | `GET /memory/status` | `DELETE /memory/episodes/{id}` | `POST /memory/consolidate` | `POST /memory/correct` | `POST /memory/export` | `POST /memory/compact` | `GET /memory/browse` | `GET /memory/topics/{filename}` | `POST /memory/timeline` | `POST /memory/contradictions` | `POST /memory/protect` | `GET /memory/decay-report` | `GET /health`
-
-## How Consolidation Works
-
-```
-store episodes → SQLite + FAISS
-                      ↓
-        background thread (every 6h)
-                      ↓
-     hierarchical clustering by similarity
-                      ↓
-        LLM synthesizes knowledge records
-        (facts, solutions, preferences, procedures)
-                      ↓
-     records feed back into recall, old episodes pruned
-```
-
-Episodes are grouped by semantic similarity using agglomerative clustering. Each cluster is matched against existing knowledge topics. The LLM either creates a new topic or merges into an existing one. Output is validated, versioned, and written as structured records with their own embeddings for independent search.
-
-Three consecutive LLM failures trip a circuit breaker. Pruned episodes still count toward consolidation history.
 
 ## Backends
 
 ### Embedding
 
-| Backend | Install | Model | Local |
-|---------|---------|-------|:-----:|
-| **FastEmbed** (default) | `pip install consolidation-memory[fastembed]` | bge-small-en-v1.5 | Y |
-| LM Studio | Built-in | nomic-embed-text-v1.5 | Y |
-| Ollama | Built-in | nomic-embed-text | Y |
-| OpenAI | `pip install consolidation-memory[openai]` | text-embedding-3-small | N |
+| Backend | Local | Default model | Typical dimension |
+| --- | --- | --- | --- |
+| `fastembed` (default) | yes | `BAAI/bge-small-en-v1.5` | 384 |
+| `lmstudio` | yes | `text-embedding-nomic-embed-text-v1.5` | 768 |
+| `ollama` | yes | `nomic-embed-text` | 768 |
+| `openai` | no | `text-embedding-3-small` | 1536 |
 
-### LLM (for consolidation)
+### LLM (for consolidation/extraction)
 
-| Backend | Requirements |
-|---------|-------------|
-| **LM Studio** (default) | LM Studio running with any chat model |
-| Ollama | Ollama running with any chat model |
-| OpenAI | API key |
-| Disabled | None — no consolidation, pure vector search |
+| Backend | Notes |
+| --- | --- |
+| `lmstudio` (default) | local chat model |
+| `ollama` | local chat model |
+| `openai` | API-backed |
+| `disabled` | store/recall only, no LLM consolidation |
 
 ## Configuration
+
+Generate config interactively:
 
 ```bash
 consolidation-memory init
 ```
 
-<details>
-<summary>Manual config</summary>
+Default config file locations:
+- Linux: `~/.config/consolidation_memory/config.toml`
+- macOS: `~/Library/Application Support/consolidation_memory/config.toml`
+- Windows: `%APPDATA%\\consolidation_memory\\config.toml`
+- Override path: `CONSOLIDATION_MEMORY_CONFIG`
 
-| Platform | Path |
-|----------|------|
-| Linux/macOS | `~/.config/consolidation_memory/config.toml` |
-| Windows | `%APPDATA%\consolidation_memory\config.toml` |
-| Override | `CONSOLIDATION_MEMORY_CONFIG` env var |
+Every scalar config field can be overridden with:
+- `CONSOLIDATION_MEMORY_<FIELD_NAME>`
 
-```toml
-[embedding]
-backend = "fastembed"
-
-[llm]
-backend = "lmstudio"
-api_base = "http://localhost:1234/v1"
-model = "qwen2.5-7b-instruct"
-
-[consolidation]
-auto_run = true
-interval_hours = 6
-cluster_threshold = 0.72  # default: 0.78
-prune_enabled = true
-prune_after_days = 60  # default: 30
-```
-
-</details>
-
-<details>
-<summary>Environment variable overrides</summary>
-
-Every setting can be overridden with `CONSOLIDATION_MEMORY_<FIELD_NAME>`:
+Examples:
 
 ```bash
-CONSOLIDATION_MEMORY_EMBEDDING_BACKEND=lmstudio
-CONSOLIDATION_MEMORY_EMBEDDING_DIMENSION=768
-CONSOLIDATION_MEMORY_LLM_BACKEND=openai
-CONSOLIDATION_MEMORY_LLM_API_KEY=sk-...
-CONSOLIDATION_MEMORY_CONSOLIDATION_INTERVAL_HOURS=12
-CONSOLIDATION_MEMORY_CONSOLIDATION_AUTO_RUN=false
+CONSOLIDATION_MEMORY_EMBEDDING_BACKEND=fastembed
+CONSOLIDATION_MEMORY_LLM_BACKEND=lmstudio
+CONSOLIDATION_MEMORY_CONSOLIDATION_INTERVAL_HOURS=6
+CONSOLIDATION_MEMORY_PROJECT=work
 ```
 
-Priority: defaults < TOML < env vars < `reset_config()` (tests).
+## CLI Commands
 
-</details>
+| Command | Purpose |
+| --- | --- |
+| `consolidation-memory serve` | start MCP server |
+| `consolidation-memory serve --rest` | start REST server |
+| `consolidation-memory init` | interactive setup |
+| `consolidation-memory test` | installation/self-check |
+| `consolidation-memory status` | show memory stats |
+| `consolidation-memory consolidate` | run consolidation now |
+| `consolidation-memory export` | export JSON snapshot |
+| `consolidation-memory import PATH` | import JSON snapshot |
+| `consolidation-memory reindex` | rebuild embeddings/index |
+| `consolidation-memory browse` | inspect knowledge topics |
+| `consolidation-memory setup-claude` | write CLAUDE.md integration block |
+| `consolidation-memory dashboard` | launch Textual dashboard |
 
-## CLI
+## Multi-project Isolation
 
-| Command | Description |
-|---------|-------------|
-| `consolidation-memory serve` | Start MCP server (default) |
-| `consolidation-memory serve --rest` | Start REST API |
-| `consolidation-memory --project work serve` | MCP server for a specific project |
-| `consolidation-memory init` | Interactive setup |
-| `consolidation-memory status` | Show stats |
-| `consolidation-memory consolidate` | Manual consolidation |
-| `consolidation-memory export` | Export to JSON |
-| `consolidation-memory import PATH` | Import from JSON |
-| `consolidation-memory reindex` | Re-embed everything (after switching backends) |
-| `consolidation-memory browse` | Browse knowledge topics |
-| `consolidation-memory setup-claude` | Add memory instructions to CLAUDE.md |
-| `consolidation-memory test` | Post-install verification |
-| `consolidation-memory dashboard` | TUI dashboard |
-
-## Multi-Project
-
-Isolate memories per project:
+Each project has isolated storage:
 
 ```bash
 consolidation-memory --project work status
 CONSOLIDATION_MEMORY_PROJECT=work consolidation-memory serve
 ```
 
-MCP config for multiple projects:
+This keeps separate:
+- SQLite DB
+- FAISS index
+- knowledge topics
+- consolidation logs
 
-```json
-{
-  "mcpServers": {
-    "memory-work": {
-      "command": "consolidation-memory",
-      "env": { "CONSOLIDATION_MEMORY_PROJECT": "work" }
-    },
-    "memory-personal": {
-      "command": "consolidation-memory",
-      "env": { "CONSOLIDATION_MEMORY_PROJECT": "personal" }
-    }
-  }
-}
+## Data Layout
+
+Base directory is `platformdirs.user_data_dir("consolidation_memory")`.
+
+Per project:
+
+```text
+projects/<project>/
+  memory.db
+  faiss_index.bin
+  faiss_id_map.json
+  faiss_tombstones.json
+  knowledge/
+  consolidation_logs/
+  backups/
 ```
-
-Each project gets its own database, vector index, and knowledge files.
-
-## Cross-Client Memory
-
-One consolidation-memory instance serves every MCP client on your machine. Claude Code, Cursor, Windsurf, VS Code + Continue — all share the same SQLite database and FAISS index. A fact stored from Cursor is recalled in Claude Code. No cloud sync needed.
-
-This is the local-first alternative to cloud-based memory passports. Your data never leaves your machine.
-
-<details>
-<summary>Example configs for each client</summary>
-
-**Claude Code** (`claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "consolidation_memory": {
-      "command": "consolidation-memory"
-    }
-  }
-}
-```
-
-**Cursor** (`.cursor/mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "consolidation_memory": {
-      "command": "consolidation-memory"
-    }
-  }
-}
-```
-
-**VS Code + Continue** (`.continue/config.json`):
-
-```json
-{
-  "mcpServers": [
-    {
-      "name": "consolidation_memory",
-      "command": "consolidation-memory"
-    }
-  ]
-}
-```
-
-**Generic MCP client** (any client supporting stdio transport):
-
-```json
-{
-  "command": "consolidation-memory",
-  "transport": "stdio"
-}
-```
-
-All configs above point at the default data directory. To share memories across clients with a specific project:
-
-```json
-{
-  "command": "consolidation-memory",
-  "env": { "CONSOLIDATION_MEMORY_PROJECT": "my-project" }
-}
-```
-
-Every client using the same project name reads and writes to the same database.
-
-</details>
-
-## Data Storage
-
-All data stays local.
-
-| Platform | Path |
-|----------|------|
-| Linux | `~/.local/share/consolidation_memory/projects/<name>/` |
-| macOS | `~/Library/Application Support/consolidation_memory/projects/<name>/` |
-| Windows | `%LOCALAPPDATA%\consolidation_memory\projects\<name>\` |
-
-Switching embedding backends? `consolidation-memory reindex`
-
-## Roadmap
-
-- [x] Hybrid search (BM25 + semantic fusion)
-- [x] Diff-aware merge validation for consolidation
-- [x] Recall result deduplication
-- [x] Confidence-aware recall ranking
-- [x] Source traceability in recall results
-- [x] Consolidation changelog
-- [x] Uncertainty signaling for low-confidence records
-- [x] Temporal belief queries (`as_of` parameter)
-- [ ] Adaptive memory (query-driven consolidation, access-weighted ranking)
-- [ ] Cross-project recall
-- [ ] First-party plugins (project context, git history)
 
 ## Development
 
@@ -304,7 +279,7 @@ Switching embedding backends? `consolidation-memory reindex`
 git clone https://github.com/charliee1w/consolidation-memory
 cd consolidation-memory
 pip install -e ".[all,dev]"
-pytest tests/ -v
+pytest tests/ -q
 ruff check src/ tests/
 ```
 

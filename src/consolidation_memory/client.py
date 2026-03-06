@@ -492,12 +492,12 @@ class MemoryClient:
 
         if batch_add_succeeded:
             for eid in pending_ids:
-                item = stored_items_by_id.get(eid)
-                if item is None:
+                if eid not in stored_items_by_id:
                     continue
+                stored_item = stored_items_by_id[eid]
                 self._persist_episode_anchors(
                     episode_id=eid,
-                    content=str(item.get("content", "")),
+                    content=str(stored_item.get("content", "")),
                 )
 
         # Fire on_store plugin hooks for each successfully stored episode
