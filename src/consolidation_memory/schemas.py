@@ -326,6 +326,80 @@ MEMORY_SEARCH_SCHEMA: dict[str, Any] = {
     },
 }
 
+MEMORY_CLAIM_BROWSE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_claim_browse",
+        "description": (
+            "Browse claims from the claim graph. "
+            "Supports optional type filtering and temporal snapshot queries via as_of."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "claim_type": {
+                    "type": "string",
+                    "description": "Optional claim type filter (e.g. 'fact', 'solution').",
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": (
+                        "Optional ISO datetime for temporal claim queries. "
+                        "When set, returns claims valid at that point in time."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "description": "Maximum claims to return.",
+                    "default": 50,
+                },
+            },
+            "required": [],
+        },
+    },
+}
+
+MEMORY_CLAIM_SEARCH_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "memory_claim_search",
+        "description": (
+            "Search claims using deterministic phrase and keyword matching. "
+            "Supports optional claim type filtering and temporal as_of queries."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search text to match against claim canonical text and payload.",
+                },
+                "claim_type": {
+                    "type": "string",
+                    "description": "Optional claim type filter (e.g. 'fact', 'solution').",
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": (
+                        "Optional ISO datetime for temporal claim queries. "
+                        "When set, searches claims valid at that point in time."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "description": "Maximum matched claims to return.",
+                    "default": 50,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 MEMORY_COMPACT_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -518,6 +592,8 @@ openai_tools: list[dict[str, Any]] = [
     MEMORY_STORE_BATCH_SCHEMA,
     MEMORY_RECALL_SCHEMA,
     MEMORY_SEARCH_SCHEMA,
+    MEMORY_CLAIM_BROWSE_SCHEMA,
+    MEMORY_CLAIM_SEARCH_SCHEMA,
     MEMORY_STATUS_SCHEMA,
     MEMORY_FORGET_SCHEMA,
     MEMORY_EXPORT_SCHEMA,
@@ -617,6 +693,23 @@ def dispatch_tool_call(
                 limit=min(arguments.get("limit", 20), 50),
             )
             return dataclasses.asdict(search_result)
+
+        elif name == "memory_claim_browse":
+            browse_claims_result = client.browse_claims(
+                claim_type=arguments.get("claim_type"),
+                as_of=arguments.get("as_of"),
+                limit=min(arguments.get("limit", 50), 200),
+            )
+            return dataclasses.asdict(browse_claims_result)
+
+        elif name == "memory_claim_search":
+            search_claims_result = client.search_claims(
+                query=arguments["query"],
+                claim_type=arguments.get("claim_type"),
+                as_of=arguments.get("as_of"),
+                limit=min(arguments.get("limit", 50), 200),
+            )
+            return dataclasses.asdict(search_claims_result)
 
         elif name == "memory_status":
             status_result = client.status()

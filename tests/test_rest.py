@@ -136,3 +136,101 @@ class TestExportEndpoint:
         data = resp.json()
         assert data["status"] == "exported"
         assert "path" in data
+
+
+class TestClaimEndpoints:
+    def test_claim_browse(self, api_client):
+        from consolidation_memory.database import upsert_claim
+
+        upsert_claim(
+            claim_id="claim-rest-browse-1",
+            claim_type="fact",
+            canonical_text="python runtime is 3.12",
+            payload={"subject": "python", "info": "3.12"},
+            valid_from="2025-01-01T00:00:00+00:00",
+        )
+
+        resp = api_client.post("/memory/claims/browse", json={"claim_type": "fact"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] >= 1
+        assert any(c["id"] == "claim-rest-browse-1" for c in data["claims"])
+
+    def test_claim_search(self, api_client):
+        from consolidation_memory.database import upsert_claim
+
+        upsert_claim(
+            claim_id="claim-rest-search-1",
+            claim_type="procedure",
+            canonical_text="start API with uvicorn main:app",
+            payload={"trigger": "run server", "steps": "uvicorn main:app --reload"},
+            valid_from="2025-01-01T00:00:00+00:00",
+        )
+
+        resp = api_client.post("/memory/claims/search", json={"query": "uvicorn"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_matches"] >= 1
+        assert any(c["id"] == "claim-rest-search-1" for c in data["claims"])
+
+    def test_claim_browse_as_of(self, api_client):
+        from consolidation_memory.database import upsert_claim
+
+        upsert_claim(
+            claim_id="claim-rest-old",
+            claim_type="fact",
+            canonical_text="uses python 3.11",
+            payload={"subject": "python", "info": "3.11"},
+            valid_from="2025-01-01T00:00:00+00:00",
+            valid_until="2025-06-01T00:00:00+00:00",
+        )
+        upsert_claim(
+            claim_id="claim-rest-new",
+            claim_type="fact",
+            canonical_text="uses python 3.12",
+            payload={"subject": "python", "info": "3.12"},
+            valid_from="2025-07-01T00:00:00+00:00",
+        )
+
+        resp = api_client.post(
+            "/memory/claims/browse",
+            json={"as_of": "2025-03-01T00:00:00+00:00", "claim_type": "fact"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = {claim["id"] for claim in data["claims"]}
+        assert "claim-rest-old" in ids
+        assert "claim-rest-new" not in ids
+
+
+class TestDriftEndpoint:
+    def test_detect_drift(self, api_client):
+        expected = {
+            "checked_anchors": [{"anchor_type": "path", "anchor_value": "src/app.py"}],
+            "impacted_claim_ids": ["claim-1"],
+            "challenged_claim_ids": ["claim-1"],
+            "impacts": [{
+                "claim_id": "claim-1",
+                "previous_status": "active",
+                "new_status": "challenged",
+                "matched_anchors": [{"anchor_type": "path", "anchor_value": "src/app.py"}],
+            }],
+        }
+
+        with patch("consolidation_memory.client.MemoryClient.detect_drift", return_value=expected) as mock_detect:
+            resp = api_client.post("/memory/detect-drift", json={"base_ref": "origin/main"})
+
+        assert resp.status_code == 200
+        assert resp.json() == expected
+        mock_detect.assert_called_once()
+        assert mock_detect.call_args.kwargs == {"base_ref": "origin/main", "repo_path": None}
+
+    def test_detect_drift_runtime_error_returns_400(self, api_client):
+        with patch(
+            "consolidation_memory.client.MemoryClient.detect_drift",
+            side_effect=RuntimeError("git diff failed"),
+        ):
+            resp = api_client.post("/memory/detect-drift", json={})
+
+        assert resp.status_code == 400
+        assert "git diff failed" in resp.json()["detail"]

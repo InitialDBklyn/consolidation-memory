@@ -10,6 +10,7 @@
 - [Storage Layout](#storage-layout)
 - [Consolidation Engine](#consolidation-engine)
 - [Retrieval Pipeline](#retrieval-pipeline)
+- [Claim Graph, Drift, And Adaptive Scheduler](#claim-graph-drift-and-adaptive-scheduler)
 - [Security Considerations](#security-considerations)
 
 ---
@@ -434,6 +435,66 @@ invalidation). Relevance is a weighted blend:
 Procedure-type records receive a 1.15× relevance boost when the query
 contains task-oriented words (`how`, `workflow`, `steps`, `deploy`, `test`,
 etc.).
+
+---
+
+## Claim Graph, Drift, And Adaptive Scheduler
+
+### Claim graph model
+
+Consolidation emits and updates claim-graph rows in SQLite:
+
+- `claims`: canonical claim text, payload, temporal validity window, lifecycle status
+- `claim_edges`: directed links (for example `contradicts`, `supports`)
+- `claim_sources`: provenance links from claims to episodes/topics/records
+- `claim_events`: lifecycle and audit trail (`create`, `update`, `expire`, `contradiction`, `code_drift_detected`, etc.)
+- `episode_anchors`: path/tool/commit anchors extracted from stored episode content
+
+Claim retrieval endpoints (`browse_claims`, `search_claims`) are deterministic
+SQL + ranking flows over this graph and support temporal reconstruction with
+`as_of`.
+
+### Drift detection flow
+
+Code-drift invalidation is implemented in `drift.py` and exposed through
+`MemoryClient.detect_drift`, CLI, and REST.
+
+```mermaid
+flowchart TD
+    A[detect_drift request] --> B[git diff --name-only working tree]
+    B --> C[optional git diff base_ref...HEAD]
+    C --> D[normalize changed paths]
+    D --> E[map paths to episode_anchors]
+    E --> F[resolve linked claims via claim_sources]
+    F --> G[mark active impacted claims as challenged]
+    G --> H[write claim_event: code_drift_detected]
+    H --> I[return impacted/challenged claim IDs + matched anchors]
+```
+
+The output is deterministic because changed paths are normalized/sorted, claim
+IDs are sorted, and audit events are always written for impacted claims.
+
+### Adaptive utility scheduler
+
+The background consolidation loop uses an adaptive trigger in addition to the
+fixed interval fallback.
+
+Signals sampled each poll:
+
+- unconsolidated backlog
+- recall miss/fallback count in lookback window
+- contradiction spike count
+- challenged-claim backlog (typically from drift)
+
+The scheduler computes a normalized weighted score using
+`consolidation/utility_scheduler.py` and config-driven weights
+(`consolidation.utility_weights`). Consolidation runs when:
+
+1. `utility_score >= consolidation.utility_threshold`, or
+2. interval timer elapsed (`consolidation.interval_hours`) as a safety fallback
+
+This design keeps behavior deterministic under fixed config + state while still
+reacting quickly to drift and contradiction pressure.
 
 ---
 

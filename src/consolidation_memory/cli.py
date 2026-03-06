@@ -6,6 +6,7 @@ Usage:
     consolidation-memory test        # Verify installation end-to-end
     consolidation-memory consolidate # Run consolidation manually
     consolidation-memory status      # Show system stats
+    consolidation-memory detect-drift # Challenge claims impacted by code changes
     consolidation-memory export      # Export to JSON
     consolidation-memory import PATH # Import from JSON export
     consolidation-memory reindex     # Re-embed all episodes with current backend
@@ -323,6 +324,20 @@ def cmd_consolidate():
     print(json.dumps(result, indent=2, default=str))
 
 
+def cmd_detect_drift(base_ref: str | None = None, repo_path: str | None = None):
+    """Detect code drift and challenge impacted claims."""
+    from consolidation_memory.client import MemoryClient
+
+    try:
+        with MemoryClient(auto_consolidate=False) as client:
+            result = client.detect_drift(base_ref=base_ref, repo_path=repo_path)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+    print(json.dumps(result, indent=2, default=str))
+
+
 def cmd_status():
     """Show system statistics."""
     from consolidation_memory.database import ensure_schema, get_stats, get_last_consolidation_run
@@ -367,7 +382,15 @@ def cmd_status():
 def cmd_export():
     """Export to JSON."""
     from consolidation_memory.database import (
-        ensure_schema, get_all_episodes, get_all_knowledge_topics, get_all_active_records,
+        ensure_schema,
+        get_all_active_records,
+        get_all_claim_edges,
+        get_all_claim_events,
+        get_all_claim_sources,
+        get_all_claims,
+        get_all_episode_anchors,
+        get_all_episodes,
+        get_all_knowledge_topics,
     )
     from consolidation_memory.config import get_config
     from datetime import datetime, timezone
@@ -388,17 +411,32 @@ def cmd_export():
         knowledge.append({**topic, "file_content": content})
 
     records = get_all_active_records()
+    claims = get_all_claims()
+    claim_edges = get_all_claim_edges()
+    claim_sources = get_all_claim_sources()
+    claim_events = get_all_claim_events()
+    episode_anchors = get_all_episode_anchors()
 
     snapshot = {
         "exported_at": datetime.now(timezone.utc).isoformat(),
-        "version": "1.1",
+        "version": "1.2",
         "episodes": episodes,
         "knowledge_topics": knowledge,
         "knowledge_records": records,
+        "claims": claims,
+        "claim_edges": claim_edges,
+        "claim_sources": claim_sources,
+        "claim_events": claim_events,
+        "episode_anchors": episode_anchors,
         "stats": {
             "episode_count": len(episodes),
             "knowledge_count": len(knowledge),
             "record_count": len(records),
+            "claim_count": len(claims),
+            "claim_edge_count": len(claim_edges),
+            "claim_source_count": len(claim_sources),
+            "claim_event_count": len(claim_events),
+            "episode_anchor_count": len(episode_anchors),
         },
     }
 
@@ -410,7 +448,10 @@ def cmd_export():
     for old in existing[cfg.MAX_BACKUPS:]:
         old.unlink()
 
-    print(f"Exported {len(episodes)} episodes + {len(knowledge)} topics + {len(records)} records to {export_path}")
+    print(
+        f"Exported {len(episodes)} episodes + {len(knowledge)} topics + "
+        f"{len(records)} records + {len(claims)} claims to {export_path}"
+    )
 
 
 def _validate_import(data: dict) -> list[str]:
@@ -452,6 +493,11 @@ def _validate_import(data: dict) -> list[str]:
     if not isinstance(data.get("stats"), dict):
         errors.append("'stats' must be an object")
 
+    # Optional v1.2+ claim graph sections
+    for key in ("claims", "claim_edges", "claim_sources", "claim_events", "episode_anchors"):
+        if key in data and not isinstance(data[key], list):
+            errors.append(f"{key!r} must be a list when provided")
+
     # Cap error output to avoid flooding on completely wrong files
     if len(errors) > 20:
         errors = errors[:20]
@@ -471,6 +517,7 @@ def cmd_import(path: str):
     from consolidation_memory.database import (
         ensure_schema, insert_episode, upsert_knowledge_topic, get_episode,
         insert_knowledge_records,
+        import_claim_graph_snapshot,
     )
     from consolidation_memory.backends import encode_documents
     from consolidation_memory.vector_store import VectorStore
@@ -585,6 +632,24 @@ def cmd_import(path: str):
 
     if r_imported:
         print(f"Records: {r_imported} imported")
+
+    # Import claim graph entities (v1.2+ exports; optional for backward compatibility)
+    imported_claim_graph = import_claim_graph_snapshot(
+        claims=data.get("claims", []),
+        claim_edges=data.get("claim_edges", []),
+        claim_sources=data.get("claim_sources", []),
+        claim_events=data.get("claim_events", []),
+        episode_anchors=data.get("episode_anchors", []),
+    )
+    if any(imported_claim_graph.values()):
+        print(
+            "Claims: "
+            f"{imported_claim_graph['claims']} claims, "
+            f"{imported_claim_graph['claim_edges']} edges, "
+            f"{imported_claim_graph['claim_sources']} sources, "
+            f"{imported_claim_graph['claim_events']} events, "
+            f"{imported_claim_graph['episode_anchors']} anchors imported"
+        )
 
     VectorStore.signal_reload()
     print("\nImport complete.")
@@ -829,6 +894,17 @@ def main():
     sub.add_parser("test", help="Verify installation works end-to-end")
     sub.add_parser("consolidate", help="Run consolidation manually")
     sub.add_parser("status", help="Show system stats")
+    p_detect_drift = sub.add_parser("detect-drift", help="Detect code drift and challenge claims")
+    p_detect_drift.add_argument(
+        "--base-ref",
+        default=None,
+        help="Optional git base ref for comparison (e.g. origin/main)",
+    )
+    p_detect_drift.add_argument(
+        "--repo-path",
+        default=None,
+        help="Repository path (default: current working directory)",
+    )
     sub.add_parser("export", help="Export to JSON")
     p_import = sub.add_parser("import", help="Import from JSON export")
     p_import.add_argument("path", help="Path to export JSON file")
@@ -853,6 +929,8 @@ def main():
         cmd_consolidate()
     elif args.command == "status":
         cmd_status()
+    elif args.command == "detect-drift":
+        cmd_detect_drift(base_ref=args.base_ref, repo_path=args.repo_path)
     elif args.command == "export":
         cmd_export()
     elif args.command == "import":

@@ -903,6 +903,18 @@ def get_recently_contradicted_topic_ids(days: int = 30) -> set[str]:
     return {row["topic_id"] for row in rows}
 
 
+def count_contradictions_since(since: str) -> int:
+    """Return contradiction count with detected_at >= since."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) AS c
+               FROM contradiction_log
+               WHERE detected_at >= ?""",
+            (since,),
+        ).fetchone()
+    return int(row["c"]) if row else 0
+
+
 def update_tag_cooccurrence(tags: list[str]) -> None:
     """Update co-occurrence counts for all tag pairs in a set.
 
@@ -1251,6 +1263,21 @@ def expire_claim(claim_id: str, valid_until: str | None = None) -> bool:
     return bool(cursor.rowcount and cursor.rowcount > 0)
 
 
+def count_active_challenged_claims(as_of: str | None = None) -> int:
+    """Return count of challenged claims that are still temporally valid."""
+    ts = as_of or _now()
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) AS c
+               FROM claims
+               WHERE status = 'challenged'
+                 AND valid_from <= ?
+                 AND (valid_until IS NULL OR valid_until > ?)""",
+            (ts, ts),
+        ).fetchone()
+    return int(row["c"]) if row else 0
+
+
 def insert_claim_edge(
     from_claim_id: str,
     to_claim_id: str,
@@ -1545,6 +1572,237 @@ def get_all_episodes(include_deleted: bool = False) -> list[dict[str, Any]]:
                 "SELECT * FROM episodes WHERE deleted = 0 ORDER BY created_at"
             ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_all_claims() -> list[dict[str, Any]]:
+    """Return all claims for export."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT id, claim_type, canonical_text, payload, status, confidence,
+                      valid_from, valid_until, created_at, updated_at
+               FROM claims
+               ORDER BY created_at ASC, id ASC"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_claim_edges() -> list[dict[str, Any]]:
+    """Return all claim edges for export."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT id, from_claim_id, to_claim_id, edge_type, confidence, details, created_at
+               FROM claim_edges
+               ORDER BY created_at ASC, id ASC"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_claim_sources() -> list[dict[str, Any]]:
+    """Return all claim source links for export."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT id, claim_id, source_episode_id, source_topic_id, source_record_id, created_at
+               FROM claim_sources
+               ORDER BY created_at ASC, id ASC"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_claim_events() -> list[dict[str, Any]]:
+    """Return all claim lifecycle events for export."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT id, claim_id, event_type, details, created_at
+               FROM claim_events
+               ORDER BY created_at ASC, id ASC"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_episode_anchors() -> list[dict[str, Any]]:
+    """Return all episode anchors for export."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT id, episode_id, anchor_type, anchor_value, created_at
+               FROM episode_anchors
+               ORDER BY created_at ASC, id ASC"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def import_claim_graph_snapshot(
+    *,
+    claims: Sequence[Mapping[str, Any]] = (),
+    claim_edges: Sequence[Mapping[str, Any]] = (),
+    claim_sources: Sequence[Mapping[str, Any]] = (),
+    claim_events: Sequence[Mapping[str, Any]] = (),
+    episode_anchors: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, int]:
+    """Import claim graph entities from an export snapshot.
+
+    Existing rows are preserved or updated by primary key:
+    - claims: upsert by claim ID
+    - edges/sources/events/anchors: insert with conflict-ignore by unique key/ID
+    """
+    now = _now()
+    imported = {
+        "claims": 0,
+        "claim_edges": 0,
+        "claim_sources": 0,
+        "claim_events": 0,
+        "episode_anchors": 0,
+    }
+
+    with get_connection() as conn:
+        for claim in claims:
+            claim_id = str(claim.get("id") or "").strip()
+            if not claim_id:
+                continue
+            payload_raw = claim.get("payload")
+            payload_text = payload_raw if isinstance(payload_raw, str) else json.dumps(payload_raw or {})
+            claim_confidence_raw = claim.get("confidence", 0.8)
+            claim_confidence = 0.8 if claim_confidence_raw is None else float(claim_confidence_raw)
+
+            created_at = str(claim.get("created_at") or now)
+            updated_at = str(claim.get("updated_at") or created_at)
+            valid_from = str(claim.get("valid_from") or created_at)
+            valid_until_raw = claim.get("valid_until")
+            valid_until = str(valid_until_raw) if valid_until_raw is not None else None
+
+            conn.execute(
+                """INSERT INTO claims
+                   (id, claim_type, canonical_text, payload, status, confidence,
+                    valid_from, valid_until, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       claim_type = excluded.claim_type,
+                       canonical_text = excluded.canonical_text,
+                       payload = excluded.payload,
+                       status = excluded.status,
+                       confidence = excluded.confidence,
+                       valid_from = excluded.valid_from,
+                       valid_until = excluded.valid_until,
+                       updated_at = excluded.updated_at""",
+                (
+                    claim_id,
+                    str(claim.get("claim_type") or "fact"),
+                    str(claim.get("canonical_text") or ""),
+                    payload_text,
+                    str(claim.get("status") or "active"),
+                    claim_confidence,
+                    valid_from,
+                    valid_until,
+                    created_at,
+                    updated_at,
+                ),
+            )
+            imported["claims"] += 1
+
+        for edge in claim_edges:
+            edge_id = str(edge.get("id") or uuid.uuid4())
+            from_claim_id = str(edge.get("from_claim_id") or "").strip()
+            to_claim_id = str(edge.get("to_claim_id") or "").strip()
+            edge_type = str(edge.get("edge_type") or "").strip()
+            if not from_claim_id or not to_claim_id or not edge_type:
+                continue
+
+            details_raw = edge.get("details")
+            details_text = details_raw if isinstance(details_raw, str) else (
+                json.dumps(details_raw) if details_raw is not None else None
+            )
+            created_at = str(edge.get("created_at") or now)
+            edge_confidence_raw = edge.get("confidence", 1.0)
+            edge_confidence = 1.0 if edge_confidence_raw is None else float(edge_confidence_raw)
+
+            cursor = conn.execute(
+                """INSERT INTO claim_edges
+                   (id, from_claim_id, to_claim_id, edge_type, confidence, details, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT DO NOTHING""",
+                (
+                    edge_id,
+                    from_claim_id,
+                    to_claim_id,
+                    edge_type,
+                    edge_confidence,
+                    details_text,
+                    created_at,
+                ),
+            )
+            if cursor.rowcount and cursor.rowcount > 0:
+                imported["claim_edges"] += 1
+
+        for source in claim_sources:
+            source_id = str(source.get("id") or uuid.uuid4())
+            claim_id = str(source.get("claim_id") or "").strip()
+            if not claim_id:
+                continue
+
+            source_episode_id = source.get("source_episode_id")
+            source_topic_id = source.get("source_topic_id")
+            source_record_id = source.get("source_record_id")
+            created_at = str(source.get("created_at") or now)
+
+            cursor = conn.execute(
+                """INSERT INTO claim_sources
+                   (id, claim_id, source_episode_id, source_topic_id, source_record_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT DO NOTHING""",
+                (
+                    source_id,
+                    claim_id,
+                    str(source_episode_id) if source_episode_id is not None else None,
+                    str(source_topic_id) if source_topic_id is not None else None,
+                    str(source_record_id) if source_record_id is not None else None,
+                    created_at,
+                ),
+            )
+            if cursor.rowcount and cursor.rowcount > 0:
+                imported["claim_sources"] += 1
+
+        for event in claim_events:
+            event_id = str(event.get("id") or uuid.uuid4())
+            claim_id = str(event.get("claim_id") or "").strip()
+            event_type = str(event.get("event_type") or "").strip()
+            if not claim_id or not event_type:
+                continue
+
+            details_raw = event.get("details")
+            details_text = details_raw if isinstance(details_raw, str) else (
+                json.dumps(details_raw) if details_raw is not None else None
+            )
+            created_at = str(event.get("created_at") or now)
+
+            cursor = conn.execute(
+                """INSERT INTO claim_events
+                   (id, claim_id, event_type, details, created_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT DO NOTHING""",
+                (event_id, claim_id, event_type, details_text, created_at),
+            )
+            if cursor.rowcount and cursor.rowcount > 0:
+                imported["claim_events"] += 1
+
+        for anchor in episode_anchors:
+            anchor_id = str(anchor.get("id") or uuid.uuid4())
+            episode_id = str(anchor.get("episode_id") or "").strip()
+            anchor_type = str(anchor.get("anchor_type") or "").strip()
+            anchor_value = str(anchor.get("anchor_value") or "").strip()
+            if not episode_id or not anchor_type or not anchor_value:
+                continue
+            created_at = str(anchor.get("created_at") or now)
+
+            cursor = conn.execute(
+                """INSERT INTO episode_anchors
+                   (id, episode_id, anchor_type, anchor_value, created_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT DO NOTHING""",
+                (anchor_id, episode_id, anchor_type, anchor_value, created_at),
+            )
+            if cursor.rowcount and cursor.rowcount > 0:
+                imported["episode_anchors"] += 1
+
+    return imported
 
 
 def get_all_active_episodes() -> list[dict[str, Any]]:

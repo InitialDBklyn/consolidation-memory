@@ -107,6 +107,12 @@ _EMBED_DEFAULTS: dict[str, dict[str, str | int]] = {
 _DEFAULT_STOPWORDS = frozenset(
     {"the", "a", "an", "and", "or", "of", "in", "on", "for", "to", "with", "is", "at", "it"}
 )
+_UTILITY_WEIGHT_KEYS = {
+    "unconsolidated_backlog",
+    "recall_miss_fallback",
+    "contradiction_spike",
+    "challenged_claim_backlog",
+}
 
 # ── Validation sets ──────────────────────────────────────────────────────────
 
@@ -187,6 +193,15 @@ class Config:
     CONSOLIDATION_CONFIDENCE_SURPRISE_W: float = 0.4
     CONSOLIDATION_MAX_DURATION: float = 1800
     CONSOLIDATION_MAX_ATTEMPTS: int = 5
+    CONSOLIDATION_UTILITY_THRESHOLD: float = 0.6
+    CONSOLIDATION_UTILITY_WEIGHTS: dict[str, float] = field(
+        default_factory=lambda: {
+            "unconsolidated_backlog": 0.4,
+            "recall_miss_fallback": 0.2,
+            "contradiction_spike": 0.2,
+            "challenged_claim_backlog": 0.2,
+        }
+    )
     CONTRADICTION_SIMILARITY_THRESHOLD: float = 0.7
     CONTRADICTION_LLM_ENABLED: bool = True
     MERGE_DROP_DETECTION_ENABLED: bool = True
@@ -426,6 +441,16 @@ def _build_config(
         CONSOLIDATION_CONFIDENCE_SURPRISE_W=float(_consol.get("cluster_confidence_surprise_weight", 0.4)),
         CONSOLIDATION_MAX_DURATION=float(_consol.get("max_duration", 1800)),
         CONSOLIDATION_MAX_ATTEMPTS=int(_consol.get("max_attempts", 5)),
+        CONSOLIDATION_UTILITY_THRESHOLD=float(_consol.get("utility_threshold", 0.6)),
+        CONSOLIDATION_UTILITY_WEIGHTS=_consol.get(
+            "utility_weights",
+            {
+                "unconsolidated_backlog": 0.4,
+                "recall_miss_fallback": 0.2,
+                "contradiction_spike": 0.2,
+                "challenged_claim_backlog": 0.2,
+            },
+        ),
         CONTRADICTION_SIMILARITY_THRESHOLD=float(_consol.get("contradiction_similarity_threshold", 0.7)),
         CONTRADICTION_LLM_ENABLED=_coerce_bool(_consol.get("contradiction_llm_enabled", True)),
         MERGE_DROP_DETECTION_ENABLED=_coerce_bool(_consol.get("merge_drop_detection_enabled", True)),
@@ -701,6 +726,11 @@ def _validate_config(c: Config) -> None:
         errors.append(f"consolidation.interval_hours = {c.CONSOLIDATION_INTERVAL_HOURS}, must be > 0")
     if c.CONSOLIDATION_MAX_DURATION <= 0:
         errors.append(f"consolidation.max_duration = {c.CONSOLIDATION_MAX_DURATION}, must be > 0")
+    if not (0.0 <= c.CONSOLIDATION_UTILITY_THRESHOLD <= 1.0):
+        errors.append(
+            "consolidation.utility_threshold = "
+            f"{c.CONSOLIDATION_UTILITY_THRESHOLD}, must be in [0, 1]"
+        )
     if c.LLM_CALL_TIMEOUT <= 0:
         errors.append(f"llm.call_timeout = {c.LLM_CALL_TIMEOUT}, must be > 0")
     if c.CONSOLIDATION_MIN_CLUSTER_SIZE < 2:
@@ -751,6 +781,24 @@ def _validate_config(c: Config) -> None:
         errors.append(
             f"consolidation.priority_weights values sum to {pw_sum}, should sum to 1.0"
         )
+
+    required_utility_keys = _UTILITY_WEIGHT_KEYS
+    actual_utility_keys = set(c.CONSOLIDATION_UTILITY_WEIGHTS.keys())
+    if actual_utility_keys != required_utility_keys:
+        errors.append(
+            f"consolidation.utility_weights must have keys {required_utility_keys}, "
+            f"got {actual_utility_keys}"
+        )
+    utility_sum = sum(c.CONSOLIDATION_UTILITY_WEIGHTS.values())
+    if not (0.99 <= utility_sum <= 1.01):
+        errors.append(
+            f"consolidation.utility_weights values sum to {utility_sum}, should sum to 1.0"
+        )
+    for key, value in c.CONSOLIDATION_UTILITY_WEIGHTS.items():
+        if value < 0:
+            errors.append(
+                f"consolidation.utility_weights[{key!r}] = {value}, must be >= 0"
+            )
 
     if errors:
         raise ValueError(

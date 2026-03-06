@@ -7,6 +7,47 @@ on:
     branches: [main]
 
 jobs:
+  novelty_gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[fastembed,dev]"
+
+      - name: Run claim graph + drift + adaptive scheduler tests
+        run: >
+          python -m pytest
+          tests/test_claim_graph.py
+          tests/test_drift_invalidation.py
+          tests/test_adaptive_consolidation.py
+          tests/test_utility_scheduler.py
+          -q
+
+      - name: Run novelty eval quick
+        run: python -m benchmarks.novelty_eval --mode quick --output benchmarks/results/novelty_eval_ci_quick.json
+
+      - name: Enforce novelty metric gate
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path("benchmarks/results/novelty_eval_ci_quick.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          overall_pass = bool(data.get("overall_pass"))
+          print(f"novelty_eval overall_pass={overall_pass}")
+          if not overall_pass:
+              for key, section in data.get("sections", {}).items():
+                  print(f"{key}: pass={section.get('pass')}, measured={section.get('measured')}")
+              sys.exit(1)
+          PY
+
   test:
     runs-on: ${{ matrix.os }}
     strategy:

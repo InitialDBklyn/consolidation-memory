@@ -1122,6 +1122,18 @@ class TestConfigDefaults:
         assert cfg.CONSOLIDATION_CONFIDENCE_COHERENCE_W == 0.6
         assert cfg.CONSOLIDATION_CONFIDENCE_SURPRISE_W == 0.4
 
+    def test_utility_scheduler_defaults(self):
+        from consolidation_memory.config import get_config
+
+        cfg = get_config()
+        assert cfg.CONSOLIDATION_UTILITY_THRESHOLD == 0.6
+        assert cfg.CONSOLIDATION_UTILITY_WEIGHTS == {
+            "unconsolidated_backlog": 0.4,
+            "recall_miss_fallback": 0.2,
+            "contradiction_spike": 0.2,
+            "challenged_claim_backlog": 0.2,
+        }
+
     def test_circuit_breaker_defaults(self):
         from consolidation_memory.config import get_config
         cfg = get_config()
@@ -1295,6 +1307,38 @@ class TestConfigWeightValidation:
             }
         )
         with pytest.raises(ValueError, match="priority_weights.*should sum to 1.0"):
+            _validate_config(cfg)
+
+    def test_utility_weights_invalid_keys(self):
+        from consolidation_memory.config import _validate_config, Config
+
+        cfg = Config(
+            CONSOLIDATION_UTILITY_WEIGHTS={
+                "backlog": 1.0,
+            }
+        )
+        with pytest.raises(ValueError, match="utility_weights must have keys"):
+            _validate_config(cfg)
+
+    def test_utility_weights_invalid_sum(self):
+        from consolidation_memory.config import _validate_config, Config
+
+        cfg = Config(
+            CONSOLIDATION_UTILITY_WEIGHTS={
+                "unconsolidated_backlog": 0.6,
+                "recall_miss_fallback": 0.2,
+                "contradiction_spike": 0.2,
+                "challenged_claim_backlog": 0.2,
+            }
+        )
+        with pytest.raises(ValueError, match="utility_weights values sum to .*should sum to 1.0"):
+            _validate_config(cfg)
+
+    def test_utility_threshold_out_of_range(self):
+        from consolidation_memory.config import _validate_config, Config
+
+        cfg = Config(CONSOLIDATION_UTILITY_THRESHOLD=1.1)
+        with pytest.raises(ValueError, match="utility_threshold"):
             _validate_config(cfg)
 
 

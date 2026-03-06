@@ -160,6 +160,91 @@ class TestClientRecall:
             client.close()
 
 
+class TestClientClaims:
+    def test_browse_claims_supports_as_of(self):
+        from consolidation_memory.database import ensure_schema, upsert_claim
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-client-old",
+            claim_type="fact",
+            canonical_text="python is 3.11",
+            payload={"subject": "python", "info": "3.11"},
+            valid_from="2025-01-01T00:00:00+00:00",
+            valid_until="2025-06-01T00:00:00+00:00",
+        )
+        upsert_claim(
+            claim_id="claim-client-new",
+            claim_type="fact",
+            canonical_text="python is 3.12",
+            payload={"subject": "python", "info": "3.12"},
+            valid_from="2025-07-01T00:00:00+00:00",
+        )
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            result = client.browse_claims(
+                claim_type="fact",
+                as_of="2025-03-01T00:00:00+00:00",
+            )
+            ids = {claim["id"] for claim in result.claims}
+            assert "claim-client-old" in ids
+            assert "claim-client-new" not in ids
+        finally:
+            client.close()
+
+    def test_search_claims_matches_canonical_text(self):
+        from consolidation_memory.database import ensure_schema, upsert_claim
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        upsert_claim(
+            claim_id="claim-client-search",
+            claim_type="procedure",
+            canonical_text="start API with uvicorn main:app",
+            payload={"trigger": "run api", "steps": "uvicorn main:app --reload"},
+            valid_from="2025-01-01T00:00:00+00:00",
+        )
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            result = client.search_claims(query="uvicorn", claim_type="procedure")
+            assert result.total_matches >= 1
+            assert any(c["id"] == "claim-client-search" for c in result.claims)
+            assert "relevance" in result.claims[0]
+        finally:
+            client.close()
+
+
+class TestClientDrift:
+    def test_detect_drift_delegates_to_drift_module(self):
+        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.client import MemoryClient
+
+        ensure_schema()
+        expected = {
+            "checked_anchors": [{"anchor_type": "path", "anchor_value": "src/app.py"}],
+            "impacted_claim_ids": ["claim-1"],
+            "challenged_claim_ids": ["claim-1"],
+            "impacts": [{
+                "claim_id": "claim-1",
+                "previous_status": "active",
+                "new_status": "challenged",
+                "matched_anchors": [{"anchor_type": "path", "anchor_value": "src/app.py"}],
+            }],
+        }
+
+        client = MemoryClient(auto_consolidate=False)
+        try:
+            with patch("consolidation_memory.drift.detect_code_drift", return_value=expected) as mock_detect:
+                result = client.detect_drift(base_ref="origin/main", repo_path="C:/repo")
+            assert result == expected
+            mock_detect.assert_called_once_with(base_ref="origin/main", repo_path="C:/repo")
+        finally:
+            client.close()
+
+
 class TestClientForget:
     @patch("consolidation_memory.backends.encode_documents")
     def test_forget_existing(self, mock_embed):
@@ -219,7 +304,14 @@ class TestClientStatus:
 class TestClientExport:
     @patch("consolidation_memory.backends.encode_documents")
     def test_export_round_trip(self, mock_embed):
-        from consolidation_memory.database import ensure_schema
+        from consolidation_memory.database import (
+            ensure_schema,
+            insert_claim_edge,
+            insert_claim_event,
+            insert_claim_sources,
+            insert_episode_anchors,
+            upsert_claim,
+        )
         from consolidation_memory.client import MemoryClient
 
         ensure_schema()
@@ -228,15 +320,59 @@ class TestClientExport:
         vec = _make_normalized_vec(seed=42)
         mock_embed.return_value = vec.reshape(1, -1)
 
-        client.store("export test", content_type="fact", tags=["test"])
+        store_result = client.store("export test", content_type="fact", tags=["test"])
+        assert store_result.id is not None
+
+        upsert_claim(
+            claim_id="export-claim-a",
+            claim_type="fact",
+            canonical_text="src/app.py sets APP_MODE=legacy",
+            payload={"path": "src/app.py", "app_mode": "legacy"},
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        upsert_claim(
+            claim_id="export-claim-b",
+            claim_type="fact",
+            canonical_text="src/app.py sets APP_MODE=modern",
+            payload={"path": "src/app.py", "app_mode": "modern"},
+            status="challenged",
+            valid_from="2026-01-01T00:00:00+00:00",
+        )
+        insert_claim_sources("export-claim-a", [{"source_episode_id": store_result.id}])
+        insert_claim_event("export-claim-a", event_type="create", details={"source": "test"})
+        insert_claim_edge(
+            from_claim_id="export-claim-a",
+            to_claim_id="export-claim-b",
+            edge_type="contradicts",
+            details={"reason": "mode changed"},
+        )
+        insert_episode_anchors(
+            store_result.id,
+            [{"anchor_type": "path", "anchor_value": "src/app.py"}],
+        )
 
         result = client.export()
         assert result.status == "exported"
         assert result.episodes == 1
+        assert result.claims == 2
+        assert result.claim_edges == 1
+        assert result.claim_sources == 1
+        assert result.claim_events == 1
+        assert result.episode_anchors >= 1
 
         from pathlib import Path
         export_data = json.loads(Path(result.path).read_text(encoding="utf-8"))
         assert export_data["stats"]["episode_count"] == 1
+        assert export_data["stats"]["claim_count"] == 2
+        assert export_data["stats"]["claim_edge_count"] == 1
+        assert export_data["stats"]["claim_source_count"] == 1
+        assert export_data["stats"]["claim_event_count"] == 1
+        assert export_data["stats"]["episode_anchor_count"] >= 1
+        assert len(export_data["claims"]) == 2
+        assert len(export_data["claim_edges"]) == 1
+        assert len(export_data["claim_sources"]) == 1
+        assert len(export_data["claim_events"]) == 1
+        assert len(export_data["episode_anchors"]) >= 1
 
         client.close()
 

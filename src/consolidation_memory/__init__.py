@@ -14,6 +14,8 @@ _LAZY_IMPORTS = {
     "ExportResult": "consolidation_memory.types",
     "CorrectResult": "consolidation_memory.types",
     "SearchResult": "consolidation_memory.types",
+    "ClaimBrowseResult": "consolidation_memory.types",
+    "ClaimSearchResult": "consolidation_memory.types",
     "BatchStoreResult": "consolidation_memory.types",
     "ConsolidationReport": "consolidation_memory.types",
     "ConsolidationQuality": "consolidation_memory.types",

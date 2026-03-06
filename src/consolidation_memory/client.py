@@ -19,6 +19,8 @@ import json
 import logging
 import re
 import threading
+import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 
@@ -36,6 +38,9 @@ from consolidation_memory.types import (
     BatchStoreResult,
     RecallResult,
     SearchResult,
+    ClaimBrowseResult,
+    ClaimSearchResult,
+    DriftOutput,
     ForgetResult,
     StatusResult,
     ExportResult,
@@ -157,6 +162,20 @@ def _extract_records_from_markdown(body: str) -> list[dict[str, str]]:
     return records
 
 
+def _parse_claim_payload(payload_raw: object) -> dict[str, object]:
+    """Parse claim payload column into a normalized dict."""
+    if isinstance(payload_raw, dict):
+        return dict(payload_raw)
+    if isinstance(payload_raw, str):
+        try:
+            parsed = json.loads(payload_raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return {}
+    return {}
+
+
 class MemoryClient:
     """Persistent semantic memory client.
 
@@ -197,6 +216,11 @@ class MemoryClient:
         # Cached backend probe result: (is_reachable, timestamp)
         self._probe_cache: tuple[bool, float] | None = None
         self._probe_cache_ttl = 30.0  # seconds
+
+        # Utility scheduler recall signals (recent misses/fallbacks).
+        self._scheduler_signal_lock = threading.Lock()
+        self._recall_miss_events: deque[float] = deque(maxlen=256)
+        self._recall_fallback_events: deque[float] = deque(maxlen=256)
 
         if auto_consolidate and cfg.CONSOLIDATION_AUTO_RUN:
             self._start_consolidation_thread()
@@ -572,6 +596,7 @@ class MemoryClient:
             )
         except ConnectionError as e:
             logger.error("Embedding backend unreachable during recall: %s", e)
+            self._record_recall_signal(fallback=True)
             return RecallResult(
                 message=f"Embedding backend unreachable: {e}",
             )
@@ -594,6 +619,14 @@ class MemoryClient:
             total_knowledge_topics=stats["knowledge_base"]["total_topics"],
             warnings=result.get("warnings", []),
         )
+
+        if (
+            len(recall_result.episodes) == 0
+            and len(recall_result.knowledge) == 0
+            and len(recall_result.records) == 0
+            and len(recall_result.claims) == 0
+        ):
+            self._record_recall_signal(miss=True)
 
         from consolidation_memory.plugins import get_plugin_manager
         get_plugin_manager().fire("on_recall", query=query, result=recall_result)
@@ -658,6 +691,149 @@ class MemoryClient:
             query=query,
         )
 
+    def browse_claims(
+        self,
+        claim_type: str | None = None,
+        as_of: str | None = None,
+        limit: int = 50,
+    ) -> ClaimBrowseResult:
+        """List claims, optionally filtered by type and temporal snapshot."""
+        from consolidation_memory.database import get_active_claims, get_claims_as_of
+
+        bounded_limit = max(1, min(limit, 200))
+        if as_of:
+            rows = get_claims_as_of(as_of=as_of, claim_type=claim_type, limit=bounded_limit)
+        else:
+            rows = get_active_claims(claim_type=claim_type, limit=bounded_limit)
+
+        claims: list[dict[str, object]] = []
+        for row in rows:
+            payload = _parse_claim_payload(row.get("payload"))
+            claims.append({
+                "id": row.get("id", ""),
+                "claim_type": row.get("claim_type", ""),
+                "canonical_text": row.get("canonical_text", ""),
+                "payload": payload,
+                "status": row.get("status", ""),
+                "confidence": row.get("confidence", 0.0),
+                "valid_from": row.get("valid_from"),
+                "valid_until": row.get("valid_until"),
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+            })
+
+        logger.info(
+            "Browse claims claim_type=%r as_of=%r returned %d results",
+            claim_type,
+            as_of,
+            len(claims),
+        )
+        return ClaimBrowseResult(
+            claims=claims,
+            total=len(claims),
+            claim_type=claim_type,
+            as_of=as_of,
+        )
+
+    def search_claims(
+        self,
+        query: str,
+        claim_type: str | None = None,
+        as_of: str | None = None,
+        limit: int = 50,
+    ) -> ClaimSearchResult:
+        """Search claims using deterministic phrase/keyword ranking."""
+        bounded_limit = max(1, min(limit, 200))
+        normalized_query = query.strip()
+        if not normalized_query:
+            return ClaimSearchResult(
+                claims=[],
+                total_matches=0,
+                query=query,
+                claim_type=claim_type,
+                as_of=as_of,
+                message="Query must not be empty.",
+            )
+
+        fetch_limit = min(max(bounded_limit * 5, bounded_limit), 1000)
+        browse_result = self.browse_claims(
+            claim_type=claim_type,
+            as_of=as_of,
+            limit=fetch_limit,
+        )
+        if not browse_result.claims:
+            return ClaimSearchResult(
+                claims=[],
+                total_matches=0,
+                query=normalized_query,
+                claim_type=claim_type,
+                as_of=as_of,
+            )
+
+        query_lower = normalized_query.lower()
+        query_terms = [term for term in query_lower.split() if term]
+
+        scored: list[dict[str, object]] = []
+        for claim in browse_result.claims:
+            payload_text = json.dumps(claim.get("payload", {}), sort_keys=True, default=str)
+            haystack = f"{claim.get('canonical_text', '')} {payload_text}".lower()
+            if not haystack.strip():
+                continue
+
+            phrase_hit = 1.0 if query_lower in haystack else 0.0
+            term_hits = sum(1 for term in query_terms if term in haystack)
+            if phrase_hit == 0.0 and term_hits == 0:
+                continue
+
+            term_score = (term_hits / len(query_terms)) if query_terms else 0.0
+            confidence = float(claim.get("confidence", 0.8) or 0.8)
+            relevance = (phrase_hit + term_score) * (0.5 + 0.5 * confidence)
+
+            ranked = dict(claim)
+            ranked["relevance"] = round(relevance, 3)
+            scored.append(ranked)
+
+        def _claim_sort_key(item: dict[str, object]) -> tuple[float, str]:
+            raw_relevance = item.get("relevance", 0.0)
+            relevance = float(raw_relevance) if isinstance(raw_relevance, (int, float)) else 0.0
+            return relevance, str(item.get("updated_at", ""))
+
+        scored.sort(key=_claim_sort_key, reverse=True)
+        top_claims = scored[:bounded_limit]
+
+        logger.info(
+            "Search claims query=%r claim_type=%r as_of=%r returned %d matches",
+            normalized_query,
+            claim_type,
+            as_of,
+            len(top_claims),
+        )
+        return ClaimSearchResult(
+            claims=top_claims,
+            total_matches=len(top_claims),
+            query=normalized_query,
+            claim_type=claim_type,
+            as_of=as_of,
+        )
+
+    def detect_drift(
+        self,
+        base_ref: str | None = None,
+        repo_path: str | None = None,
+    ) -> DriftOutput:
+        """Detect code drift and challenge anchored claims."""
+        from consolidation_memory.drift import detect_code_drift
+
+        result = detect_code_drift(base_ref=base_ref, repo_path=repo_path)
+        logger.info(
+            "Detect drift base_ref=%r repo_path=%r impacted=%d challenged=%d",
+            base_ref,
+            repo_path,
+            len(result["impacted_claim_ids"]),
+            len(result["challenged_claim_ids"]),
+        )
+        return result
+
     def status(self) -> StatusResult:
         """Get memory system statistics.
 
@@ -712,6 +888,17 @@ class MemoryClient:
             }
             recent_activity.append(summary)
 
+        utility_state = self._compute_consolidation_utility()
+        utility_scheduler = {
+            "enabled": bool(cfg.CONSOLIDATION_AUTO_RUN),
+            "threshold": cfg.CONSOLIDATION_UTILITY_THRESHOLD,
+            "weights": dict(cfg.CONSOLIDATION_UTILITY_WEIGHTS),
+            "score": utility_state["score"],
+            "normalized_signals": utility_state["normalized_signals"],
+            "weighted_components": utility_state["weighted_components"],
+            "raw_signals": utility_state["raw_signals"],
+        }
+
         return StatusResult(
             episodic_buffer=stats["episodic_buffer"],
             knowledge_base=stats["knowledge_base"],
@@ -726,6 +913,7 @@ class MemoryClient:
             consolidation_metrics=metrics,
             consolidation_quality=quality_summary,
             recent_activity=recent_activity,
+            utility_scheduler=utility_scheduler,
         )
 
     def forget(self, episode_id: str) -> ForgetResult:
@@ -762,7 +950,14 @@ class MemoryClient:
         """
         from consolidation_memory.config import get_config
         from consolidation_memory.database import (
-            get_all_episodes, get_all_knowledge_topics, get_all_active_records,
+            get_all_active_records,
+            get_all_claim_edges,
+            get_all_claim_events,
+            get_all_claim_sources,
+            get_all_claims,
+            get_all_episode_anchors,
+            get_all_episodes,
+            get_all_knowledge_topics,
         )
 
         cfg = get_config()
@@ -782,17 +977,32 @@ class MemoryClient:
             knowledge.append({**topic, "file_content": content})
 
         records = get_all_active_records()
+        claims = get_all_claims()
+        claim_edges = get_all_claim_edges()
+        claim_sources = get_all_claim_sources()
+        claim_events = get_all_claim_events()
+        episode_anchors = get_all_episode_anchors()
 
         snapshot = {
             "exported_at": datetime.now(timezone.utc).isoformat(),
-            "version": "1.1",
+            "version": "1.2",
             "episodes": episodes,
             "knowledge_topics": knowledge,
             "knowledge_records": records,
+            "claims": claims,
+            "claim_edges": claim_edges,
+            "claim_sources": claim_sources,
+            "claim_events": claim_events,
+            "episode_anchors": episode_anchors,
             "stats": {
                 "episode_count": len(episodes),
                 "knowledge_count": len(knowledge),
                 "record_count": len(records),
+                "claim_count": len(claims),
+                "claim_edge_count": len(claim_edges),
+                "claim_source_count": len(claim_sources),
+                "claim_event_count": len(claim_events),
+                "episode_anchor_count": len(episode_anchors),
             },
         }
 
@@ -809,8 +1019,11 @@ class MemoryClient:
             old.unlink()
 
         logger.info(
-            "Exported %d episodes + %d topics to %s",
-            len(episodes), len(knowledge), export_path,
+            "Exported %d episodes + %d topics + %d claims to %s",
+            len(episodes),
+            len(knowledge),
+            len(claims),
+            export_path,
         )
 
         return ExportResult(
@@ -818,6 +1031,11 @@ class MemoryClient:
             path=str(export_path),
             episodes=len(episodes),
             knowledge_topics=len(knowledge),
+            claims=len(claims),
+            claim_edges=len(claim_edges),
+            claim_sources=len(claim_sources),
+            claim_events=len(claim_events),
+            episode_anchors=len(episode_anchors),
         )
 
     def correct(self, topic_filename: str, correction: str) -> CorrectResult:
@@ -1571,6 +1789,112 @@ class MemoryClient:
                 cfg.EMBEDDING_BACKEND, cfg.EMBEDDING_API_BASE, e,
             )
 
+    def _record_recall_signal(
+        self,
+        *,
+        miss: bool = False,
+        fallback: bool = False,
+        timestamp_monotonic: float | None = None,
+    ) -> None:
+        """Record recall miss/fallback events for utility scheduling."""
+        if not miss and not fallback:
+            return
+        ts = timestamp_monotonic if timestamp_monotonic is not None else time.monotonic()
+        with self._scheduler_signal_lock:
+            if miss:
+                self._recall_miss_events.append(ts)
+            if fallback:
+                self._recall_fallback_events.append(ts)
+
+    def _recent_recall_signal_counts(
+        self,
+        lookback_seconds: float,
+        now_monotonic: float | None = None,
+    ) -> tuple[int, int]:
+        """Return miss/fallback counts within lookback window."""
+        now = now_monotonic if now_monotonic is not None else time.monotonic()
+        cutoff = now - max(1.0, lookback_seconds)
+        with self._scheduler_signal_lock:
+            while self._recall_miss_events and self._recall_miss_events[0] < cutoff:
+                self._recall_miss_events.popleft()
+            while self._recall_fallback_events and self._recall_fallback_events[0] < cutoff:
+                self._recall_fallback_events.popleft()
+            return len(self._recall_miss_events), len(self._recall_fallback_events)
+
+    def _compute_consolidation_utility(
+        self,
+        *,
+        now_monotonic: float | None = None,
+    ) -> dict[str, object]:
+        """Compute current utility score and signal breakdown."""
+        from datetime import timedelta
+        from consolidation_memory.config import get_config
+        from consolidation_memory.consolidation.utility_scheduler import compute_utility_score
+        from consolidation_memory.database import (
+            count_active_challenged_claims,
+            count_contradictions_since,
+            get_stats,
+        )
+
+        cfg = get_config()
+        lookback_seconds = max(300.0, cfg.CONSOLIDATION_INTERVAL_HOURS * 3600.0)
+        miss_count, fallback_count = self._recent_recall_signal_counts(
+            lookback_seconds=lookback_seconds,
+            now_monotonic=now_monotonic,
+        )
+        now_wallclock = datetime.now(timezone.utc)
+        contradictions_since = (now_wallclock - timedelta(seconds=lookback_seconds)).isoformat()
+
+        stats = get_stats()
+        pending_backlog = int(stats["episodic_buffer"]["pending_consolidation"])
+        contradiction_count = count_contradictions_since(contradictions_since)
+        challenged_backlog = count_active_challenged_claims(as_of=now_wallclock.isoformat())
+
+        score_breakdown = compute_utility_score(
+            unconsolidated_backlog=pending_backlog,
+            recall_miss_count=miss_count,
+            recall_fallback_count=fallback_count,
+            contradiction_count=contradiction_count,
+            challenged_claim_backlog=challenged_backlog,
+            weights=cfg.CONSOLIDATION_UTILITY_WEIGHTS,
+            backlog_target=max(1, cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN),
+            recall_signal_target=3,
+            contradiction_target=3,
+            challenged_claim_target=max(1, cfg.CONSOLIDATION_MAX_EPISODES_PER_RUN // 4),
+        )
+
+        return {
+            "score": score_breakdown["score"],
+            "normalized_signals": score_breakdown["normalized_signals"],
+            "weighted_components": score_breakdown["weighted_components"],
+            "raw_signals": {
+                "unconsolidated_backlog": pending_backlog,
+                "recall_miss_count": miss_count,
+                "recall_fallback_count": fallback_count,
+                "contradiction_count": contradiction_count,
+                "challenged_claim_backlog": challenged_backlog,
+                "lookback_seconds": lookback_seconds,
+            },
+        }
+
+    def _should_trigger_consolidation(
+        self,
+        *,
+        now_monotonic: float,
+        last_run_monotonic: float,
+        interval_seconds: float,
+        utility_score: float,
+    ) -> tuple[bool, str]:
+        """Decide whether to trigger consolidation this cycle."""
+        if now_monotonic - last_run_monotonic >= interval_seconds:
+            return True, "interval"
+        from consolidation_memory.config import get_config
+
+        cfg = get_config()
+        if utility_score >= cfg.CONSOLIDATION_UTILITY_THRESHOLD:
+            return True, "utility"
+        return False, "none"
+
     def _start_consolidation_thread(self) -> None:
         """Start the background consolidation daemon thread."""
         self._consolidation_stop.clear()
@@ -1587,11 +1911,16 @@ class MemoryClient:
 
         cfg = get_config()
         interval = cfg.CONSOLIDATION_INTERVAL_HOURS * 3600
+        poll_interval = min(interval, 60.0)
         # Allow internal timeout + 60s buffer before we forcibly give up
         max_duration = cfg.CONSOLIDATION_MAX_DURATION + 60
         logger.info(
-            "Background consolidation thread started (interval: %.1fh, timeout: %ds)",
-            cfg.CONSOLIDATION_INTERVAL_HOURS, max_duration,
+            "Background consolidation thread started "
+            "(interval: %.1fh, poll: %.0fs, utility_threshold: %.2f, timeout: %ds)",
+            cfg.CONSOLIDATION_INTERVAL_HOURS,
+            poll_interval,
+            cfg.CONSOLIDATION_UTILITY_THRESHOLD,
+            max_duration,
         )
 
         # Use a single shared pool for consolidation runs instead of creating
@@ -1601,21 +1930,42 @@ class MemoryClient:
                 max_workers=1, thread_name_prefix="consolidation"
             )
 
-        while not self._consolidation_stop.wait(timeout=interval):
+        last_run_monotonic = time.monotonic()
+
+        while not self._consolidation_stop.wait(timeout=poll_interval):
             if self._consolidation_stop.is_set():
                 break
             if self._consolidation_pool is None:
                 break
+            now_monotonic = time.monotonic()
+            utility_state = self._compute_consolidation_utility(now_monotonic=now_monotonic)
+            utility_score = float(utility_state["score"])
+            should_run, trigger_reason = self._should_trigger_consolidation(
+                now_monotonic=now_monotonic,
+                last_run_monotonic=last_run_monotonic,
+                interval_seconds=interval,
+                utility_score=utility_score,
+            )
+            if not should_run:
+                continue
             if not self._consolidation_lock.acquire(blocking=False):
                 logger.info("Consolidation already running, skipping")
                 continue
             try:
                 from consolidation_memory.consolidation import run_consolidation
+                logger.info(
+                    "Consolidation trigger=%s utility_score=%.3f components=%s raw=%s",
+                    trigger_reason,
+                    utility_score,
+                    utility_state["weighted_components"],
+                    utility_state["raw_signals"],
+                )
                 future = self._consolidation_pool.submit(
                     run_consolidation, vector_store=self._vector_store
                 )
                 try:
                     result = future.result(timeout=max_duration)
+                    last_run_monotonic = time.monotonic()
                     logger.info(
                         "Background consolidation completed: %s",
                         result.get("status", result),

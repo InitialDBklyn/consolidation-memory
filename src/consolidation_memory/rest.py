@@ -87,6 +87,24 @@ class SearchRequest(BaseModel):
     limit: int = Field(default=20, ge=1, le=50)
 
 
+class ClaimBrowseRequest(BaseModel):
+    claim_type: str | None = None
+    as_of: str | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class ClaimSearchRequest(BaseModel):
+    query: str
+    claim_type: str | None = None
+    as_of: str | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class DetectDriftRequest(BaseModel):
+    base_ref: str | None = None
+    repo_path: str | None = None
+
+
 class CorrectRequest(BaseModel):
     topic_filename: str
     correction: str
@@ -208,6 +226,44 @@ def create_app() -> FastAPI:
             limit=req.limit,
         )
         return dataclasses.asdict(result)
+
+    @app.post("/memory/claims/browse")
+    async def browse_claims(req: ClaimBrowseRequest):
+        """Browse claims with optional type and temporal filtering."""
+        client = _require_client()
+        result = await asyncio.to_thread(
+            client.browse_claims,
+            claim_type=req.claim_type,
+            as_of=req.as_of,
+            limit=req.limit,
+        )
+        return dataclasses.asdict(result)
+
+    @app.post("/memory/claims/search")
+    async def search_claims(req: ClaimSearchRequest):
+        """Search claims by text with optional type and temporal filtering."""
+        client = _require_client()
+        result = await asyncio.to_thread(
+            client.search_claims,
+            query=req.query,
+            claim_type=req.claim_type,
+            as_of=req.as_of,
+            limit=req.limit,
+        )
+        return dataclasses.asdict(result)
+
+    @app.post("/memory/detect-drift")
+    async def detect_drift(req: DetectDriftRequest):
+        """Detect code drift and challenge anchored claims."""
+        client = _require_client()
+        try:
+            return await asyncio.to_thread(
+                client.detect_drift,
+                base_ref=req.base_ref,
+                repo_path=req.repo_path,
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     @app.get("/memory/status")
     async def status():

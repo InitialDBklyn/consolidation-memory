@@ -200,6 +200,7 @@ class StatusResult:
     consolidation_metrics: list[dict[str, Any]] = field(default_factory=list)
     consolidation_quality: ConsolidationQuality | dict[str, Any] | None = None
     recent_activity: list[dict[str, Any]] = field(default_factory=list)
+    utility_scheduler: dict[str, Any] | None = None
 
 
 @dataclass
@@ -210,6 +211,11 @@ class ExportResult:
     path: str = ""
     episodes: int = 0
     knowledge_topics: int = 0
+    claims: int = 0
+    claim_edges: int = 0
+    claim_sources: int = 0
+    claim_events: int = 0
+    episode_anchors: int = 0
 
 
 @dataclass
@@ -229,6 +235,29 @@ class SearchResult:
     episodes: list[dict[str, Any]] = field(default_factory=list)
     total_matches: int = 0
     query: str | None = None
+    message: str | None = None
+
+
+@dataclass
+class ClaimBrowseResult:
+    """Result of browsing claims."""
+
+    claims: list[dict[str, Any]] = field(default_factory=list)
+    total: int = 0
+    claim_type: str | None = None
+    as_of: str | None = None
+    message: str | None = None
+
+
+@dataclass
+class ClaimSearchResult:
+    """Result of searching claims."""
+
+    claims: list[dict[str, Any]] = field(default_factory=list)
+    total_matches: int = 0
+    query: str | None = None
+    claim_type: str | None = None
+    as_of: str | None = None
     message: str | None = None
 
 

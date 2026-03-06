@@ -23,6 +23,8 @@ Local-first persistent memory for coding agents.
   - claim sources
   - claim events
 - Extracts and persists episode anchors (paths, commits, tool references).
+- Detects code drift from git changes and challenges impacted claims with audit events.
+- Uses an adaptive consolidation scheduler (utility score + interval fallback).
 - Returns claim results in `recall()` alongside episodes, topics, and records.
 
 ## Quick Start
@@ -57,6 +59,8 @@ Available tools:
 - `memory_store_batch`
 - `memory_recall`
 - `memory_search`
+- `memory_claim_browse`
+- `memory_claim_search`
 - `memory_status`
 - `memory_forget`
 - `memory_export`
@@ -126,6 +130,12 @@ Consolidation emits deterministic claims for merged records and writes:
 - `claim_events`: `create`, `update`, `expire`, `contradiction`, etc.
 - `claim_edges`: relationship graph (for example, `contradicts`)
 
+Claim retrieval is exposed through:
+- Python: `MemoryClient.browse_claims(...)` and `MemoryClient.search_claims(...)`
+- MCP/OpenAI tools: `memory_claim_browse` and `memory_claim_search`
+- REST: `POST /memory/claims/browse` and `POST /memory/claims/search`
+- Temporal claim-state queries: pass `as_of` to claim browse/search interfaces
+
 ### Anchor persistence
 
 Stored episode content is parsed for anchors and written to `episode_anchors`:
@@ -134,6 +144,15 @@ Stored episode content is parsed for anchors and written to `episode_anchors`:
 - tool references (`pytest`, `uvicorn`, `docker`, `git`, etc.)
 
 Anchors are used for drift workflows and claim challenge operations.
+
+### Drift detection interfaces
+
+- CLI: `consolidation-memory detect-drift [--base-ref origin/main] [--repo-path <path>]`
+- Python: `MemoryClient.detect_drift(base_ref=..., repo_path=...)`
+- REST: `POST /memory/detect-drift`
+
+Drift detection maps changed files to anchored claims, challenges impacted active
+claims, and records `claim_events` with event type `code_drift_detected`.
 
 ## REST API
 
@@ -150,6 +169,9 @@ Endpoints:
 - `POST /memory/store/batch`
 - `POST /memory/recall`
 - `POST /memory/search`
+- `POST /memory/claims/browse`
+- `POST /memory/claims/search`
+- `POST /memory/detect-drift`
 - `GET /memory/status`
 - `DELETE /memory/episodes/{episode_id}`
 - `POST /memory/consolidate`
@@ -234,6 +256,7 @@ CONSOLIDATION_MEMORY_PROJECT=work
 | `consolidation-memory test` | installation/self-check |
 | `consolidation-memory status` | show memory stats |
 | `consolidation-memory consolidate` | run consolidation now |
+| `consolidation-memory detect-drift` | challenge claims impacted by changed files |
 | `consolidation-memory export` | export JSON snapshot |
 | `consolidation-memory import PATH` | import JSON snapshot |
 | `consolidation-memory reindex` | rebuild embeddings/index |
@@ -272,6 +295,15 @@ projects/<project>/
   consolidation_logs/
   backups/
 ```
+
+Export/import snapshots include:
+
+- episodes + knowledge topics/records
+- claims
+- claim edges
+- claim sources
+- claim events
+- episode anchors
 
 ## Development
 

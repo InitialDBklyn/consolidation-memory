@@ -6,7 +6,15 @@ Run with: python -m pytest tests/test_schemas.py -v
 from unittest.mock import MagicMock
 
 from consolidation_memory.schemas import openai_tools, dispatch_tool_call
-from consolidation_memory.types import StoreResult, RecallResult, SearchResult, ForgetResult, StatusResult
+from consolidation_memory.types import (
+    StoreResult,
+    RecallResult,
+    SearchResult,
+    ClaimBrowseResult,
+    ClaimSearchResult,
+    ForgetResult,
+    StatusResult,
+)
 
 
 class TestSchemaStructure:
@@ -17,6 +25,8 @@ class TestSchemaStructure:
             "memory_store_batch",
             "memory_recall",
             "memory_search",
+            "memory_claim_browse",
+            "memory_claim_search",
             "memory_status",
             "memory_forget",
             "memory_export",
@@ -121,6 +131,47 @@ class TestDispatch:
             after=None,
             before=None,
             limit=20,
+        )
+
+    def test_dispatch_claim_browse(self):
+        client = MagicMock()
+        client.browse_claims.return_value = ClaimBrowseResult(
+            claims=[{"id": "claim-1", "canonical_text": "python version is 3.12"}],
+            total=1,
+            claim_type="fact",
+        )
+
+        result = dispatch_tool_call(
+            client,
+            "memory_claim_browse",
+            {"claim_type": "fact", "as_of": "2026-01-01T00:00:00+00:00", "limit": 25},
+        )
+        assert result["total"] == 1
+        client.browse_claims.assert_called_once_with(
+            claim_type="fact",
+            as_of="2026-01-01T00:00:00+00:00",
+            limit=25,
+        )
+
+    def test_dispatch_claim_search(self):
+        client = MagicMock()
+        client.search_claims.return_value = ClaimSearchResult(
+            claims=[{"id": "claim-2", "canonical_text": "uses uvicorn"}],
+            total_matches=1,
+            query="uvicorn",
+        )
+
+        result = dispatch_tool_call(
+            client,
+            "memory_claim_search",
+            {"query": "uvicorn", "claim_type": "procedure", "as_of": "2026-01-01T00:00:00+00:00"},
+        )
+        assert result["total_matches"] == 1
+        client.search_claims.assert_called_once_with(
+            query="uvicorn",
+            claim_type="procedure",
+            as_of="2026-01-01T00:00:00+00:00",
+            limit=50,
         )
 
     def test_dispatch_unknown_returns_error(self):

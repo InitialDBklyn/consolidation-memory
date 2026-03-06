@@ -153,6 +153,64 @@ class TestMainDispatch:
             main()
             mock_cmd.assert_called_once()
 
+    def test_detect_drift_subcommand_registered(self):
+        """argparse recognizes 'detect-drift' and dispatches correctly."""
+        from consolidation_memory.cli import main
+
+        with (
+            patch("sys.argv", ["consolidation-memory", "detect-drift", "--base-ref", "origin/main"]),
+            patch("consolidation_memory.cli.cmd_detect_drift") as mock_cmd,
+        ):
+            main()
+            mock_cmd.assert_called_once_with(base_ref="origin/main", repo_path=None)
+
+
+class TestDetectDriftCommand:
+    def test_cmd_detect_drift_prints_json(self, capsys):
+        from consolidation_memory.cli import cmd_detect_drift
+
+        expected = {
+            "checked_anchors": [{"anchor_type": "path", "anchor_value": "src/app.py"}],
+            "impacted_claim_ids": ["claim-1"],
+            "challenged_claim_ids": ["claim-1"],
+            "impacts": [{
+                "claim_id": "claim-1",
+                "previous_status": "active",
+                "new_status": "challenged",
+                "matched_anchors": [{"anchor_type": "path", "anchor_value": "src/app.py"}],
+            }],
+        }
+
+        with patch("consolidation_memory.client.MemoryClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            mock_client.__enter__.return_value = mock_client
+            mock_client.detect_drift.return_value = expected
+
+            cmd_detect_drift(base_ref="origin/main", repo_path="C:/repo")
+
+            mock_client.detect_drift.assert_called_once_with(
+                base_ref="origin/main",
+                repo_path="C:/repo",
+            )
+
+        captured = capsys.readouterr()
+        assert json.loads(captured.out) == expected
+
+    def test_cmd_detect_drift_exits_on_runtime_error(self, capsys):
+        from consolidation_memory.cli import cmd_detect_drift
+
+        with patch("consolidation_memory.client.MemoryClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            mock_client.__enter__.return_value = mock_client
+            mock_client.detect_drift.side_effect = RuntimeError("git diff failed")
+
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_detect_drift()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "git diff failed" in captured.err
+
 
 class TestExportImportHardening:
     def test_export_skips_knowledge_path_traversal(self, tmp_data_dir):
@@ -203,3 +261,118 @@ class TestExportImportHardening:
         assert len(topics) == 1
         assert topics[0]["filename"] == "topic.md"
         assert json.loads(topics[0]["source_episodes"]) == []
+
+    def test_import_round_trip_claim_graph_entities(self, tmp_data_dir):
+        from consolidation_memory.cli import cmd_import
+        from consolidation_memory.config import get_config
+        from consolidation_memory.database import (
+            ensure_schema,
+            get_all_claim_edges,
+            get_all_claim_events,
+            get_all_claim_sources,
+            get_all_claims,
+            get_all_episode_anchors,
+        )
+
+        cfg = get_config()
+        ensure_schema()
+        payload = {
+            "exported_at": "2026-03-06T00:00:00+00:00",
+            "version": "1.2",
+            "episodes": [
+                {
+                    "id": "ep-import-1",
+                    "content": "Changed src/app.py to APP_MODE=legacy",
+                    "content_type": "fact",
+                    "tags": ["deploy"],
+                    "surprise_score": 0.5,
+                }
+            ],
+            "knowledge_topics": [],
+            "knowledge_records": [],
+            "claims": [
+                {
+                    "id": "claim-import-a",
+                    "claim_type": "fact",
+                    "canonical_text": "src/app.py sets APP_MODE=legacy",
+                    "payload": {"path": "src/app.py", "app_mode": "legacy"},
+                    "status": "active",
+                    "confidence": 0.9,
+                    "valid_from": "2026-01-01T00:00:00+00:00",
+                    "valid_until": None,
+                    "created_at": "2026-03-06T00:00:00+00:00",
+                    "updated_at": "2026-03-06T00:00:00+00:00",
+                },
+                {
+                    "id": "claim-import-b",
+                    "claim_type": "fact",
+                    "canonical_text": "src/app.py sets APP_MODE=modern",
+                    "payload": {"path": "src/app.py", "app_mode": "modern"},
+                    "status": "challenged",
+                    "confidence": 0.7,
+                    "valid_from": "2026-01-01T00:00:00+00:00",
+                    "valid_until": None,
+                    "created_at": "2026-03-06T00:00:01+00:00",
+                    "updated_at": "2026-03-06T00:00:01+00:00",
+                },
+            ],
+            "claim_edges": [
+                {
+                    "id": "edge-import-1",
+                    "from_claim_id": "claim-import-a",
+                    "to_claim_id": "claim-import-b",
+                    "edge_type": "contradicts",
+                    "confidence": 0.8,
+                    "details": {"reason": "new evidence"},
+                    "created_at": "2026-03-06T00:00:02+00:00",
+                }
+            ],
+            "claim_sources": [
+                {
+                    "id": "source-import-1",
+                    "claim_id": "claim-import-a",
+                    "source_episode_id": "ep-import-1",
+                    "source_topic_id": None,
+                    "source_record_id": None,
+                    "created_at": "2026-03-06T00:00:03+00:00",
+                }
+            ],
+            "claim_events": [
+                {
+                    "id": "event-import-1",
+                    "claim_id": "claim-import-a",
+                    "event_type": "create",
+                    "details": {"source": "import"},
+                    "created_at": "2026-03-06T00:00:04+00:00",
+                }
+            ],
+            "episode_anchors": [
+                {
+                    "id": "anchor-import-1",
+                    "episode_id": "ep-import-1",
+                    "anchor_type": "path",
+                    "anchor_value": "src/app.py",
+                    "created_at": "2026-03-06T00:00:05+00:00",
+                }
+            ],
+            "stats": {
+                "episode_count": 1,
+                "knowledge_count": 0,
+                "record_count": 0,
+                "claim_count": 2,
+                "claim_edge_count": 1,
+                "claim_source_count": 1,
+                "claim_event_count": 1,
+                "episode_anchor_count": 1,
+            },
+        }
+        import_path = cfg.BACKUP_DIR / "import_claim_graph_round_trip.json"
+        import_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        cmd_import(str(import_path))
+
+        assert len(get_all_claims()) == 2
+        assert len(get_all_claim_edges()) == 1
+        assert len(get_all_claim_sources()) == 1
+        assert len(get_all_claim_events()) == 1
+        assert len(get_all_episode_anchors()) == 1

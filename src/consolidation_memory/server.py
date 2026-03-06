@@ -219,6 +219,63 @@ async def memory_search(
 
 
 @mcp.tool()
+async def memory_claim_browse(
+    claim_type: str | None = None,
+    as_of: str | None = None,
+    limit: int = 50,
+) -> str:
+    """Browse claims from the claim graph.
+
+    Args:
+        claim_type: Optional claim type filter (e.g. 'fact', 'solution').
+        as_of: Optional ISO datetime for temporal claim queries.
+        limit: Maximum results (default 50, max 200).
+    """
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(
+            client.browse_claims,
+            claim_type=claim_type,
+            as_of=as_of,
+            limit=min(limit, 200),
+        )
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_claim_browse failed")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+async def memory_claim_search(
+    query: str,
+    claim_type: str | None = None,
+    as_of: str | None = None,
+    limit: int = 50,
+) -> str:
+    """Search claims by text with optional temporal snapshot filtering.
+
+    Args:
+        query: Search text to match claim canonical text and payload.
+        claim_type: Optional claim type filter (e.g. 'fact', 'solution').
+        as_of: Optional ISO datetime for temporal claim queries.
+        limit: Maximum matches (default 50, max 200).
+    """
+    try:
+        client = _get_client()
+        result = await asyncio.to_thread(
+            client.search_claims,
+            query=query,
+            claim_type=claim_type,
+            as_of=as_of,
+            limit=min(limit, 200),
+        )
+        return json.dumps(dataclasses.asdict(result), default=str)
+    except Exception as e:
+        logger.exception("memory_claim_search failed")
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
 async def memory_status() -> str:
     """Show memory system statistics.
 

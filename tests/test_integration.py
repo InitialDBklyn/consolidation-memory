@@ -242,3 +242,83 @@ class TestHybridRecall:
         # Also verify it's in the FTS index directly
         fts_results = fts_search("CORS AuthService")
         assert len(fts_results) >= 1
+
+
+class TestClaimDriftEndToEnd:
+    def test_store_consolidate_claim_retrieval_drift_recall(self, client, monkeypatch, tmp_data_dir):
+        from consolidation_memory.database import (
+            get_all_episodes,
+            get_connection,
+            insert_claim_event,
+            insert_claim_sources,
+            upsert_claim,
+        )
+
+        stored = client.store(
+            "Deployment note: src/app.py sets APP_MODE=legacy until migration is done.",
+            content_type="fact",
+            tags=["deploy", "app"],
+        )
+        assert stored.status == "stored"
+
+        claim_id = "integration-claim-app-mode"
+
+        def _fake_run_consolidation(vector_store=None):
+            del vector_store
+            episodes = get_all_episodes(include_deleted=False)
+            assert episodes, "expected at least one episode before consolidation"
+            source_episode_id = episodes[0]["id"]
+
+            upsert_claim(
+                claim_id=claim_id,
+                claim_type="fact",
+                canonical_text="src/app.py sets APP_MODE=legacy",
+                payload={"path": "src/app.py", "app_mode": "legacy"},
+                status="active",
+                confidence=0.9,
+                valid_from="2026-01-01T00:00:00+00:00",
+            )
+            insert_claim_sources(
+                claim_id,
+                [{"source_episode_id": source_episode_id}],
+            )
+            insert_claim_event(claim_id, event_type="create", details={"source": "integration-test"})
+
+            return {"status": "completed", "episodes_processed": 1}
+
+        with patch("consolidation_memory.consolidation.run_consolidation", side_effect=_fake_run_consolidation):
+            consolidation_result = client.consolidate()
+        assert consolidation_result["status"] == "completed"
+
+        pre_drift_claims = client.search_claims(query="APP_MODE legacy", claim_type="fact")
+        assert any(claim["id"] == claim_id for claim in pre_drift_claims.claims)
+
+        monkeypatch.setattr(
+            "consolidation_memory.drift.get_changed_files",
+            lambda base_ref=None, repo_path=None: ["src/app.py"],
+        )
+        drift_result = client.detect_drift(base_ref="origin/main", repo_path=tmp_data_dir)
+        assert drift_result["impacted_claim_ids"] == [claim_id]
+        assert drift_result["challenged_claim_ids"] == [claim_id]
+
+        post_drift_claims = client.search_claims(query="APP_MODE legacy", claim_type="fact")
+        assert all(claim["id"] != claim_id for claim in post_drift_claims.claims)
+
+        recall_after_drift = client.recall("What mode is src/app.py using right now?")
+        assert all(claim["id"] != claim_id for claim in recall_after_drift.claims)
+
+        with get_connection() as conn:
+            claim_row = conn.execute(
+                "SELECT status FROM claims WHERE id = ?",
+                (claim_id,),
+            ).fetchone()
+            drift_event = conn.execute(
+                """SELECT 1
+                   FROM claim_events
+                   WHERE claim_id = ? AND event_type = 'code_drift_detected'
+                   LIMIT 1""",
+                (claim_id,),
+            ).fetchone()
+
+        assert claim_row is not None and claim_row["status"] == "challenged"
+        assert drift_event is not None
