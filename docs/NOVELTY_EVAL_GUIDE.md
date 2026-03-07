@@ -56,6 +56,7 @@ python -m benchmarks.novelty_eval --mode quick --output benchmarks/results/novel
 Top-level:
 
 - `benchmark`: `"novelty_eval"`
+- `run_id`: unique benchmark run identifier
 - `mode`: `"quick"` or `"full"`
 - `generated_at`: ISO-8601 UTC timestamp
 - `cloud_dependencies_used`: boolean
@@ -91,3 +92,16 @@ Each section includes:
   - `missing_provenance_claims_per_1000`
 
 If a section fails, use its scenario/query details to locate regressions quickly.
+
+## Release Gate Validation
+
+Validate a Full-run artifact against release policy gates:
+
+```bash
+python scripts/verify_release_gates.py \
+  --novelty-result benchmarks/results/novelty_eval_full.json \
+  --scope-use-case "Drift-aware debugging memory" \
+  --output benchmarks/results/release_gate_report.json
+```
+
+The command fails closed (exit code 1) when any mandatory gate fails.

@@ -10,7 +10,38 @@ permissions:
   id-token: write   # Required for trusted publishing (OIDC)
 
 jobs:
+  release_gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[fastembed,dev]"
+
+      - name: Run full novelty evaluation
+        run: python -m benchmarks.novelty_eval --mode full --output benchmarks/results/novelty_eval_release_full.json
+
+      - name: Enforce mandatory release gates
+        run: >
+          python scripts/verify_release_gates.py
+          --novelty-result benchmarks/results/novelty_eval_release_full.json
+          --scope-use-case "Drift-aware debugging memory"
+          --output benchmarks/results/release_gate_report.json
+
+      - name: Upload release gate evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-evidence
+          path: |
+            benchmarks/results/novelty_eval_release_full.json
+            benchmarks/results/release_gate_report.json
+
   build:
+    needs: release_gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

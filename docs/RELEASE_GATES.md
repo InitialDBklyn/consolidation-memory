@@ -38,3 +38,14 @@ Required gates:
 
 ## Fail Closed Policy
 If any gate cannot be evaluated exactly as specified (missing data, ambiguous result, benchmark failure, or stale evidence), default to **NO-GO** and block release until the gate is rerun and passes with complete evidence.
+
+## Automation
+- CI release enforcement script: `scripts/verify_release_gates.py`
+- Nightly Full evidence workflow: `.github/workflows/novelty-full-nightly.yml`
+- Tag publish workflow gate: `.github/workflows/publish.yml` (`release_gates` job)
+
+The verification script is mandatory in release automation and writes a gate report that includes:
+- benchmark run ID
+- benchmark timestamp
+- raw metric outputs
+- computed pass/fail status per metric section

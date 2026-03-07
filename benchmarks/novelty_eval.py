@@ -18,6 +18,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -668,6 +669,7 @@ def run_eval(mode: str) -> dict[str, Any]:
 
         return {
             "benchmark": "novelty_eval",
+            "run_id": f"novelty_eval_{mode}_{uuid.uuid4().hex[:12]}",
             "mode": mode,
             "generated_at": _iso(_utc_now()),
             "cloud_dependencies_used": False,
