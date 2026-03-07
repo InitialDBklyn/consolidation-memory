@@ -1,14 +1,13 @@
-# Recommended CLAUDE.md Snippet
+# Recommended Agent Instructions
 
-Add this to your `~/.claude/CLAUDE.md` (global) or project-level `CLAUDE.md` to ensure Claude Code proactively uses memory tools.
+Add this to your agent instruction file (for example `AGENTS.md`) so the
+agent proactively uses memory tools.
 
 You can add this automatically with:
 
 ```bash
-consolidation-memory setup-memory --path ~/.claude/CLAUDE.md
+consolidation-memory setup-memory --path AGENTS.md
 ```
-
-(`setup-claude` is still available as a legacy alias.)
 
 Or copy the snippet below manually:
 
@@ -19,7 +18,7 @@ Or copy the snippet below manually:
 
 **Recall**: At the start of every new conversation, call `memory_recall`
 with a query matching the user's opening message topic. This is your
-persistent memory — always check it before responding.
+persistent memory - always check it before responding.
 
 **Store**: Proactively call `memory_store` whenever you:
 - Learn something new about the user's setup, environment, or projects
@@ -36,21 +35,7 @@ like greetings or simple Q&A.
 
 ---
 
-## Recommended Hook Config
+## Optional Session-Start Reminder
 
-For automatic memory recall on every session start, add a Claude Code hook:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "type": "command",
-        "command": "echo 'Memory system active — recall will be triggered by CLAUDE.md instructions'"
-      }
-    ]
-  }
-}
-```
-
-The CLAUDE.md instructions above are the primary mechanism for ensuring proactive memory use. The hook serves as a reminder that the memory system is available.
+If your agent platform supports startup hooks, add a lightweight reminder hook
+that confirms memory tooling is active for the session.

@@ -930,14 +930,6 @@ def cmd_setup_memory(path: str = "AGENTS.md"):
     print("\nMemory instructions are installed for this agent instruction file.")
 
 
-def cmd_setup_claude():
-    """Legacy alias for setup-memory that writes to ~/.claude/CLAUDE.md."""
-    from pathlib import Path
-
-    print("Deprecated command: use `consolidation-memory setup-memory --path ~/.claude/CLAUDE.md`.")
-    cmd_setup_memory(str(Path.home() / ".claude" / "CLAUDE.md"))
-
-
 def cmd_dashboard():
     """Launch the TUI dashboard."""
     try:
@@ -995,10 +987,6 @@ def main():
         default="AGENTS.md",
         help="Instruction file path (default: AGENTS.md)",
     )
-    sub.add_parser(
-        "setup-claude",
-        help="Deprecated alias for setup-memory --path ~/.claude/CLAUDE.md",
-    )
     sub.add_parser("dashboard", help="Launch TUI dashboard")
 
     args = parser.parse_args()
@@ -1029,8 +1017,6 @@ def main():
         cmd_browse()
     elif args.command == "setup-memory":
         cmd_setup_memory(args.path)
-    elif args.command == "setup-claude":
-        cmd_setup_claude()
     elif args.command == "dashboard":
         cmd_dashboard()
 

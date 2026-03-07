@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{name = "Charlie Wright"}]
-keywords = ["mcp", "memory", "ai", "semantic-search", "faiss", "claude"]
+keywords = ["mcp", "memory", "ai", "semantic-search", "faiss", "agents"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

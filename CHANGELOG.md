@@ -10,7 +10,7 @@ First public pre-1.0 release focused on trust-preserving queries, scoped shared-
 - Added schema v13 scope columns plus indexes across episodes and knowledge tables, enabling namespace/project/app/agent/session partitioning without separate deployments.
 - Added canonical `CanonicalQueryService` and query envelopes to unify recall/search/claim browse/search semantics across Python client, CLI, MCP server, and REST surfaces.
 - Added trust-preserving claim scope filtering based on claim provenance source rows to prevent cross-scope claim leakage.
-- Added vendor-neutral instruction bootstrap command `setup-memory --path ...` while keeping `setup-claude` as a legacy alias.
+- Standardized on the vendor-neutral instruction bootstrap command `setup-memory --path ...`.
 - Added universal project guidance and config examples to run one shared memory project across clients.
 - Added fail-closed release gate enforcement with novelty evidence validation in release automation and publish workflows.
 - Added a builder baseline smoke test and `ResourceWarning` gating to lock a minimum stable foundation for contributors.
@@ -54,7 +54,7 @@ First public pre-1.0 release focused on trust-preserving queries, scoped shared-
 
 - Pre-1.0 SemVer: this is a minor feature release (`0.13.0`).
 - Existing external APIs remain available; scope/query enhancements are additive.
-- `setup-claude` continues to work as an alias to `setup-memory --path ~/.claude/CLAUDE.md`.
+- Instruction setup now uses `setup-memory --path <instruction-file>` only.
 
 ## 0.12.4 - 2026-03-06
 

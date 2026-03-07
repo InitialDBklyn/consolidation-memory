@@ -267,7 +267,6 @@ CONSOLIDATION_MEMORY_PROJECT=work
 | `consolidation-memory reindex` | rebuild embeddings/index |
 | `consolidation-memory browse` | inspect knowledge topics |
 | `consolidation-memory setup-memory --path AGENTS.md` | write memory integration block to any instruction file |
-| `consolidation-memory setup-claude` | legacy alias for `setup-memory --path ~/.claude/CLAUDE.md` |
 | `consolidation-memory dashboard` | launch Textual dashboard |
 
 ## Agent Instruction Setup
@@ -278,11 +277,16 @@ Use the vendor-neutral setup helper to add proactive recall/store guidance to yo
 consolidation-memory setup-memory --path AGENTS.md
 ```
 
-For Claude Desktop specifically, use:
+Example targets:
 
 ```bash
-consolidation-memory setup-memory --path ~/.claude/CLAUDE.md
+consolidation-memory setup-memory --path AGENTS.md
+consolidation-memory setup-memory --path .github/copilot-instructions.md
+consolidation-memory setup-memory --path .cursor/rules/memory.md
 ```
+
+Template instructions are available in
+[`docs/recommended-agent-instructions.md`](docs/recommended-agent-instructions.md).
 
 ## Multi-project Isolation
 
