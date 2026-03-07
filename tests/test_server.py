@@ -93,6 +93,59 @@ class TestMCPRecallTool:
         )
 
 
+class TestMCPClaimTools:
+    def test_memory_claim_browse_calls_canonical_query_service(self):
+        from consolidation_memory.server import memory_claim_browse
+        from consolidation_memory.types import ClaimBrowseResult
+
+        mock_client = MagicMock()
+        mock_client.query_browse_claims.return_value = ClaimBrowseResult(claims=[], total=0)
+
+        with patch("consolidation_memory.server._get_client", return_value=mock_client):
+            output = asyncio.run(
+                memory_claim_browse(
+                    claim_type="fact",
+                    scope={"project": {"slug": "repo-a"}},
+                )
+            )
+
+        assert json.loads(output)["total"] == 0
+        mock_client.query_browse_claims.assert_called_once_with(
+            claim_type="fact",
+            as_of=None,
+            limit=50,
+            scope={"project": {"slug": "repo-a"}},
+        )
+
+    def test_memory_claim_search_calls_canonical_query_service(self):
+        from consolidation_memory.server import memory_claim_search
+        from consolidation_memory.types import ClaimSearchResult
+
+        mock_client = MagicMock()
+        mock_client.query_search_claims.return_value = ClaimSearchResult(
+            claims=[],
+            total_matches=0,
+            query="python",
+        )
+
+        with patch("consolidation_memory.server._get_client", return_value=mock_client):
+            output = asyncio.run(
+                memory_claim_search(
+                    query="python",
+                    scope={"namespace": {"slug": "team-a"}},
+                )
+            )
+
+        assert json.loads(output)["total_matches"] == 0
+        mock_client.query_search_claims.assert_called_once_with(
+            query="python",
+            claim_type=None,
+            as_of=None,
+            limit=50,
+            scope={"namespace": {"slug": "team-a"}},
+        )
+
+
 class TestMCPConsolidateTool:
     def test_memory_consolidate_passthrough_status(self):
         from consolidation_memory.server import memory_consolidate

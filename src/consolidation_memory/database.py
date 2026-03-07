@@ -324,7 +324,9 @@ def _get_cached_connection() -> sqlite3.Connection:
                 conn = None
 
     _ensure_parent(_get_config().DB_PATH)
-    conn = sqlite3.connect(current_db_path, timeout=10)
+    # Connections are still thread-local for normal use, but we allow
+    # cross-thread close during global teardown in tests/shutdown.
+    conn = sqlite3.connect(current_db_path, timeout=10, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

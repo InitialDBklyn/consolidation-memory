@@ -281,6 +281,53 @@ class TestClaimEndpoints:
         assert "claim-rest-old" in ids
         assert "claim-rest-new" not in ids
 
+    def test_claim_browse_with_scope_uses_canonical_client_method(self, api_client):
+        from consolidation_memory.types import ClaimBrowseResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.query_browse_claims",
+            return_value=ClaimBrowseResult(claims=[], total=0),
+        ) as mock_query_browse:
+            resp = api_client.post(
+                "/memory/claims/browse",
+                json={
+                    "claim_type": "fact",
+                    "scope": {"project": {"slug": "repo-a"}},
+                },
+            )
+
+        assert resp.status_code == 200
+        mock_query_browse.assert_called_once_with(
+            claim_type="fact",
+            as_of=None,
+            limit=50,
+            scope={"project": {"slug": "repo-a"}},
+        )
+
+    def test_claim_search_with_scope_uses_canonical_client_method(self, api_client):
+        from consolidation_memory.types import ClaimSearchResult
+
+        with patch(
+            "consolidation_memory.client.MemoryClient.query_search_claims",
+            return_value=ClaimSearchResult(claims=[], total_matches=0, query="python"),
+        ) as mock_query_search:
+            resp = api_client.post(
+                "/memory/claims/search",
+                json={
+                    "query": "python",
+                    "scope": {"namespace": {"slug": "team-a"}},
+                },
+            )
+
+        assert resp.status_code == 200
+        mock_query_search.assert_called_once_with(
+            query="python",
+            claim_type=None,
+            as_of=None,
+            limit=50,
+            scope={"namespace": {"slug": "team-a"}},
+        )
+
 
 class TestDriftEndpoint:
     def test_detect_drift(self, api_client):

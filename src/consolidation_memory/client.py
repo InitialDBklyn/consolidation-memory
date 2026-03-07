@@ -1060,14 +1060,19 @@ class MemoryClient:
         claim_type: str | None = None,
         as_of: str | None = None,
         limit: int = 50,
+        *,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
     ) -> ClaimBrowseResult:
         """Canonical claim-browse entrypoint for all adapters."""
+        operation_context = self.build_operation_context(scope)
+        scope_filter = _resolved_scope_to_query_filter(operation_context.scope)
         result = self._query_service.browse_claims(
             ClaimBrowseQuery(
                 claim_type=claim_type,
                 as_of=as_of,
                 limit=limit,
-            )
+            ),
+            scope_filter=scope_filter if scope is not None else None,
         )
         logger.info(
             "Browse claims claim_type=%r as_of=%r returned %d results",
@@ -1096,15 +1101,20 @@ class MemoryClient:
         claim_type: str | None = None,
         as_of: str | None = None,
         limit: int = 50,
+        *,
+        scope: ScopeEnvelope | dict[str, object] | None = None,
     ) -> ClaimSearchResult:
         """Canonical claim-search entrypoint for all adapters."""
+        operation_context = self.build_operation_context(scope)
+        scope_filter = _resolved_scope_to_query_filter(operation_context.scope)
         result = self._query_service.search_claims(
             ClaimSearchQuery(
                 query=query,
                 claim_type=claim_type,
                 as_of=as_of,
                 limit=limit,
-            )
+            ),
+            scope_filter=scope_filter if scope is not None else None,
         )
         logger.info(
             "Search claims query=%r claim_type=%r as_of=%r returned %d matches",

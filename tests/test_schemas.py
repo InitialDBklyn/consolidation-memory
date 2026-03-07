@@ -71,15 +71,19 @@ class TestSchemaStructure:
         assert "topic_filename" in required
         assert "correction" in required
 
-    def test_scope_schema_present_for_store_recall_batch_and_search(self):
+    def test_scope_schema_present_for_store_recall_batch_search_and_claim_queries(self):
         store = next(t for t in openai_tools if t["function"]["name"] == "memory_store")
         store_batch = next(t for t in openai_tools if t["function"]["name"] == "memory_store_batch")
         recall = next(t for t in openai_tools if t["function"]["name"] == "memory_recall")
         search = next(t for t in openai_tools if t["function"]["name"] == "memory_search")
+        claim_browse = next(t for t in openai_tools if t["function"]["name"] == "memory_claim_browse")
+        claim_search = next(t for t in openai_tools if t["function"]["name"] == "memory_claim_search")
         assert "scope" in store["function"]["parameters"]["properties"]
         assert "scope" in store_batch["function"]["parameters"]["properties"]
         assert "scope" in recall["function"]["parameters"]["properties"]
         assert "scope" in search["function"]["parameters"]["properties"]
+        assert "scope" in claim_browse["function"]["parameters"]["properties"]
+        assert "scope" in claim_search["function"]["parameters"]["properties"]
 
 
 class TestDispatch:
@@ -259,6 +263,7 @@ class TestDispatch:
             claim_type="fact",
             as_of="2026-01-01T00:00:00+00:00",
             limit=25,
+            scope=None,
         )
 
     def test_dispatch_claim_search(self):
@@ -280,6 +285,40 @@ class TestDispatch:
             claim_type="procedure",
             as_of="2026-01-01T00:00:00+00:00",
             limit=50,
+            scope=None,
+        )
+
+    def test_dispatch_claim_browse_with_scope(self):
+        client = MagicMock()
+        client.query_browse_claims.return_value = ClaimBrowseResult(claims=[], total=0)
+
+        dispatch_tool_call(
+            client,
+            "memory_claim_browse",
+            {"claim_type": "fact", "scope": {"project": {"slug": "repo-a"}}},
+        )
+        client.query_browse_claims.assert_called_once_with(
+            claim_type="fact",
+            as_of=None,
+            limit=50,
+            scope={"project": {"slug": "repo-a"}},
+        )
+
+    def test_dispatch_claim_search_with_scope(self):
+        client = MagicMock()
+        client.query_search_claims.return_value = ClaimSearchResult(claims=[], total_matches=0, query="python")
+
+        dispatch_tool_call(
+            client,
+            "memory_claim_search",
+            {"query": "python", "scope": {"namespace": {"slug": "team-a"}}},
+        )
+        client.query_search_claims.assert_called_once_with(
+            query="python",
+            claim_type=None,
+            as_of=None,
+            limit=50,
+            scope={"namespace": {"slug": "team-a"}},
         )
 
     def test_dispatch_detect_drift(self):

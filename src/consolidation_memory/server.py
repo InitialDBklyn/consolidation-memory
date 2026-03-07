@@ -229,6 +229,7 @@ async def memory_claim_browse(
     claim_type: str | None = None,
     as_of: str | None = None,
     limit: int = 50,
+    scope: dict[str, object] | None = None,
 ) -> str:
     """Browse claims from the claim graph.
 
@@ -236,6 +237,7 @@ async def memory_claim_browse(
         claim_type: Optional claim type filter (e.g. 'fact', 'solution').
         as_of: Optional ISO datetime for temporal claim queries.
         limit: Maximum results (default 50, max 200).
+        scope: Optional canonical scope envelope for namespace/project/client isolation.
     """
     try:
         client = _get_client()
@@ -244,6 +246,7 @@ async def memory_claim_browse(
             claim_type=claim_type,
             as_of=as_of,
             limit=min(limit, 200),
+            scope=scope,
         )
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:
@@ -257,6 +260,7 @@ async def memory_claim_search(
     claim_type: str | None = None,
     as_of: str | None = None,
     limit: int = 50,
+    scope: dict[str, object] | None = None,
 ) -> str:
     """Search claims by text with optional temporal snapshot filtering.
 
@@ -265,6 +269,7 @@ async def memory_claim_search(
         claim_type: Optional claim type filter (e.g. 'fact', 'solution').
         as_of: Optional ISO datetime for temporal claim queries.
         limit: Maximum matches (default 50, max 200).
+        scope: Optional canonical scope envelope for namespace/project/client isolation.
     """
     try:
         client = _get_client()
@@ -274,6 +279,7 @@ async def memory_claim_search(
             claim_type=claim_type,
             as_of=as_of,
             limit=min(limit, 200),
+            scope=scope,
         )
         return json.dumps(dataclasses.asdict(result), default=str)
     except Exception as e:

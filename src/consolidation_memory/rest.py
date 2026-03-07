@@ -95,6 +95,7 @@ class ClaimBrowseRequest(BaseModel):
     claim_type: str | None = None
     as_of: str | None = None
     limit: int = Field(default=50, ge=1, le=200)
+    scope: dict[str, object] | None = None
 
 
 class ClaimSearchRequest(BaseModel):
@@ -102,6 +103,7 @@ class ClaimSearchRequest(BaseModel):
     claim_type: str | None = None
     as_of: str | None = None
     limit: int = Field(default=50, ge=1, le=200)
+    scope: dict[str, object] | None = None
 
 
 class DetectDriftRequest(BaseModel):
@@ -259,6 +261,7 @@ def create_app() -> FastAPI:
             claim_type=req.claim_type,
             as_of=req.as_of,
             limit=req.limit,
+            scope=req.scope,
         )
         return dataclasses.asdict(result)
 
@@ -272,6 +275,7 @@ def create_app() -> FastAPI:
             claim_type=req.claim_type,
             as_of=req.as_of,
             limit=req.limit,
+            scope=req.scope,
         )
         return dataclasses.asdict(result)
 

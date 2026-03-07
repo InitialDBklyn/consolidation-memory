@@ -1,6 +1,8 @@
 """Tests for multi-project namespace support: validation, project switching, and isolation."""
 
 import sqlite3
+import threading
+from contextlib import closing
 from unittest.mock import patch
 
 import pytest
@@ -168,13 +170,41 @@ class TestSetActiveProject:
         alpha_db = cfg._base_data_dir / "projects" / "default" / "memory.db"
         beta_db = cfg._base_data_dir / "projects" / "beta" / "memory.db"
 
-        with sqlite3.connect(alpha_db) as conn:
+        with closing(sqlite3.connect(alpha_db)) as conn:
             alpha_count = conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
-        with sqlite3.connect(beta_db) as conn:
+        with closing(sqlite3.connect(beta_db)) as conn:
             beta_count = conn.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
 
         assert alpha_count == 1
         assert beta_count == 1
+
+    def test_close_all_connections_closes_worker_thread_connection(self, tmp_data_dir):
+        from consolidation_memory.database import ensure_schema, get_connection
+
+        ensure_schema()
+        ready = threading.Event()
+        release = threading.Event()
+        holder: dict[str, sqlite3.Connection] = {}
+
+        def worker() -> None:
+            with get_connection() as conn:
+                conn.execute("SELECT 1")
+                holder["conn"] = conn
+            ready.set()
+            release.wait(timeout=5)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        assert ready.wait(timeout=5)
+        assert "conn" in holder
+
+        database.close_all_connections()
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            holder["conn"].execute("SELECT 1")
+
+        release.set()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 # ── Project isolation (end-to-end) ──────────────────────────────────────────

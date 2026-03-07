@@ -436,6 +436,7 @@ MEMORY_CLAIM_BROWSE_SCHEMA: dict[str, Any] = {
                     "description": "Maximum claims to return.",
                     "default": 50,
                 },
+                "scope": SCOPE_ENVELOPE_SCHEMA,
             },
             "required": [],
         },
@@ -475,6 +476,7 @@ MEMORY_CLAIM_SEARCH_SCHEMA: dict[str, Any] = {
                     "description": "Maximum matched claims to return.",
                     "default": 50,
                 },
+                "scope": SCOPE_ENVELOPE_SCHEMA,
             },
             "required": ["query"],
         },
@@ -822,6 +824,7 @@ def dispatch_tool_call(
                 claim_type=arguments.get("claim_type"),
                 as_of=arguments.get("as_of"),
                 limit=min(arguments.get("limit", 50), 200),
+                scope=arguments.get("scope"),
             )
             return dataclasses.asdict(browse_claims_result)
 
@@ -831,6 +834,7 @@ def dispatch_tool_call(
                 claim_type=arguments.get("claim_type"),
                 as_of=arguments.get("as_of"),
                 limit=min(arguments.get("limit", 50), 200),
+                scope=arguments.get("scope"),
             )
             return dataclasses.asdict(search_claims_result)
 

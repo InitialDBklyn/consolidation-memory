@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from os import PathLike
 from typing import Mapping
 
-from consolidation_memory.query_semantics import parse_claim_payload
+from consolidation_memory.query_semantics import (
+    filter_claims_for_scope,
+    parse_claim_payload,
+)
 from consolidation_memory.types import (
     ClaimBrowseResult,
     ClaimSearchResult,
@@ -150,7 +153,12 @@ class CanonicalQueryService:
             query=query.query,
         )
 
-    def browse_claims(self, query: ClaimBrowseQuery) -> ClaimBrowseResult:
+    def browse_claims(
+        self,
+        query: ClaimBrowseQuery,
+        *,
+        scope_filter: Mapping[str, str | None] | None = None,
+    ) -> ClaimBrowseResult:
         """Execute canonical claim browse semantics with temporal support."""
         from consolidation_memory.database import get_active_claims, get_claims_as_of
 
@@ -182,14 +190,21 @@ class CanonicalQueryService:
                 "updated_at": row.get("updated_at"),
             })
 
+        scoped_claims = filter_claims_for_scope(claims, scope_filter)
+
         return ClaimBrowseResult(
-            claims=claims,
-            total=len(claims),
+            claims=scoped_claims,
+            total=len(scoped_claims),
             claim_type=query.claim_type,
             as_of=query.as_of,
         )
 
-    def search_claims(self, query: ClaimSearchQuery) -> ClaimSearchResult:
+    def search_claims(
+        self,
+        query: ClaimSearchQuery,
+        *,
+        scope_filter: Mapping[str, str | None] | None = None,
+    ) -> ClaimSearchResult:
         """Execute canonical claim search semantics using browse snapshot + ranking."""
         bounded_limit = max(1, min(query.limit, 200))
         normalized_query = query.query.strip()
@@ -209,7 +224,8 @@ class CanonicalQueryService:
                 claim_type=query.claim_type,
                 as_of=query.as_of,
                 limit=fetch_limit,
-            )
+            ),
+            scope_filter=scope_filter,
         )
         if not browse_result.claims:
             return ClaimSearchResult(
@@ -277,4 +293,3 @@ __all__ = [
     "EpisodeSearchQuery",
     "RecallQuery",
 ]
-

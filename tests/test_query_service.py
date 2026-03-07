@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from consolidation_memory.query_service import (
     CanonicalQueryService,
+    ClaimBrowseQuery,
     ClaimSearchQuery,
     DriftQuery,
     RecallQuery,
@@ -66,6 +67,33 @@ class TestCanonicalQueryServiceRecall:
 
 
 class TestCanonicalQueryServiceClaims:
+    def test_browse_claims_applies_scope_filter_when_provided(self):
+        service = CanonicalQueryService(vector_store=MagicMock())
+        rows = [{
+            "id": "claim-a",
+            "claim_type": "fact",
+            "canonical_text": "python runtime is 3.12",
+            "payload": "{\"subject\":\"python\",\"info\":\"3.12\"}",
+            "status": "active",
+            "confidence": 0.9,
+            "valid_from": "2025-01-01T00:00:00+00:00",
+            "valid_until": None,
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "updated_at": "2025-01-01T00:00:00+00:00",
+        }]
+
+        with (
+            patch("consolidation_memory.database.get_active_claims", return_value=rows),
+            patch("consolidation_memory.query_service.filter_claims_for_scope", return_value=[]) as mock_scope_filter,
+        ):
+            result = service.browse_claims(
+                ClaimBrowseQuery(claim_type="fact", as_of=None, limit=50),
+                scope_filter={"project_slug": "repo-a"},
+            )
+
+        assert result.total == 0
+        mock_scope_filter.assert_called_once()
+
     def test_search_claims_ranks_from_browse_snapshot(self):
         service = CanonicalQueryService(vector_store=MagicMock())
         browse_result = ClaimBrowseResult(
@@ -128,4 +156,3 @@ class TestCanonicalQueryServiceDrift:
 
         assert result == expected
         mock_detect.assert_called_once_with(base_ref="origin/main", repo_path="C:/repo")
-
